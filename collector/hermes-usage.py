@@ -47,22 +47,10 @@ WEEK_DAYS = 7
 # message timestamps; older rows are attributed to the day they were last
 # recorded. Their tokens still count toward all-time totals either way.
 DAY_MAP_HORIZON_DAYS = 120
-# Window used to pick the provider named in the panel hero.
-PROVIDER_LABEL_WINDOW_DAYS = 30
-
-PROVIDER_LABELS = {
-    "anthropic": "Anthropic",
-    "deepseek": "DeepSeek",
-    "google": "Google Gemini",
-    "moonshot": "Moonshot",
-    "nous": "Nous Portal",
-    "nous-portal": "Nous Portal",
-    "openai": "OpenAI",
-    "openai-codex": "ChatGPT subscription",
-    "openrouter": "OpenRouter",
-    "xai": "xAI",
-    "zai": "Z.ai",
-}
+# Hermes bills across whatever providers are configured, often several at once,
+# so the panel's single plan line cannot name one of them truthfully. It says
+# what the panel is showing instead.
+HERO_LABEL = "Usage breakdown"
 
 
 def expand(value: str) -> Path:
@@ -182,7 +170,6 @@ class Accumulator:
         self.tokens_by_day: dict[str, float] = {}
         self.tokens_by_model: dict[str, dict[str, int]] = {}
         self.today_tokens_by_model: dict[str, float] = {}
-        self.provider_tokens: dict[str, float] = {}
         self.session_days: set[str] = set()
         self.total_sessions = 0
         self.total_prompts = 0
@@ -246,7 +233,6 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
     today = dt.date.today()
     today_start = day_start_epoch(today)
     horizon_start = day_start_epoch(today - dt.timedelta(days=DAY_MAP_HORIZON_DAYS))
-    provider_start = day_start_epoch(today - dt.timedelta(days=PROVIDER_LABEL_WINDOW_DAYS))
 
     session_columns = columns(conn, "sessions")
     message_columns = columns(conn, "messages")
@@ -308,7 +294,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
 
     rows = list(
         conn.execute(
-            "SELECT session_id, model, billing_provider, task,"
+            "SELECT session_id, model,"
             " input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,"
             " reasoning_tokens, first_seen, last_seen"
             " FROM session_model_usage"
@@ -365,25 +351,6 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
             if day == today:
                 acc.add_today_model(model, share)
 
-        last_seen = float(row["last_seen"] or 0)
-        if last_seen >= provider_start:
-            provider = str(row["billing_provider"] or "").strip().lower()
-            if provider and provider != "auto":
-                acc.provider_tokens[provider] = acc.provider_tokens.get(provider, 0.0) + total
-
-
-def pretty_provider(provider: str) -> str:
-    label = PROVIDER_LABELS.get(provider)
-    if label:
-        return label
-    return provider.replace("_", " ").replace("-", " ").strip().capitalize()
-
-
-def tier_label(acc: Accumulator) -> str:
-    if not acc.provider_tokens:
-        return "Local session totals"
-    provider = max(acc.provider_tokens.items(), key=lambda item: item[1])[0]
-    return pretty_provider(provider)
 
 
 def build_record() -> dict[str, Any] | None:
@@ -427,7 +394,7 @@ def build_record() -> dict[str, Any] | None:
         # Hermes counts its own turns, so the panel may show prompts and
         # sessions rather than hiding them the way billing-API agents do.
         "hasPromptStats": True,
-        "tierLabel": tier_label(acc),
+        "tierLabel": HERO_LABEL,
         # No provider usage endpoint is contacted, so there are no rate-limit
         # windows to draw. The panel skips the limits section when this is empty.
         "limits": [],

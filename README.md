@@ -30,9 +30,10 @@ else consumes it.
   showing its prompt and session counts on hover.
 - **Tokens by model** — all-time totals per model, split into input, output,
   cache read, and cache write.
-- **Hero line** — the provider paying for the usage, taken from the dominant
-  billing provider in the last 30 days (`ChatGPT subscription`, `Nous Portal`,
-  `DeepSeek`, …), or `Local session totals` when nothing recent is billed.
+- **Hero line** — a plain `Usage breakdown` label. Hermes bills across
+  whatever providers are configured, often several at once, so the panel's
+  single plan line would have to pick one of them and quietly mislead about
+  the rest.
 
 There are no rate-limit meters. Hermes is not queried against a provider usage
 endpoint, so there are no session/weekly windows to draw and the limits section
@@ -64,7 +65,6 @@ not write to.
 | Tokens by model | `session_model_usage` grouped by model (input, output + reasoning, cache read, cache write) |
 | Today's prompts / sessions | `messages` rows with `role = 'user'` today, and sessions with activity today |
 | All-time prompts / sessions / active days | `messages`, `sessions` |
-| Hero provider | Dominant `billing_provider` by tokens in the last 30 days |
 
 Hermes records usage per session and model rather than per message, so a
 session that ran across several days has its counters spread over the days it
@@ -80,7 +80,7 @@ Disclosed in full, because plugins run unsandboxed inside `omarchy-shell`:
 
 - **Reads** `$HERMES_HOME/state.db` and `$HERMES_HOME/profiles/*/state.db`
   read-only (`mode=ro`, `PRAGMA query_only`). No message content is read —
-  only counts, token counters, model names, providers, and timestamps.
+  only counts, token counters, model names, and timestamps.
 - **Writes** exactly one file:
   `$XDG_STATE_HOME/omarchy/agents/usage/hermes.json`, written to a temp file in
   the same directory and renamed into place.
