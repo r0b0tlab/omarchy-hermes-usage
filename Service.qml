@@ -39,8 +39,8 @@ Item {
 
   property bool warnedFailure: false
 
-  // Also reachable on demand:
-  //   omarchy-shell shell call io.github.am423.hermes-usage refresh
+  // Also reachable on demand by running the collector directly:
+  //   python3 <plugin dir>/collector/hermes-usage.py --write
   function refresh() {
     if (collector.running) return
     collector.command = ["python3", collectorPath, "--write"]

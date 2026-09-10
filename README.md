@@ -13,7 +13,7 @@ being patched.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/am423/omarchy-hermes-usage.git --enable
+omarchy plugin add https://github.com/r0b0tlab/omarchy-hermes-usage.git --enable
 ```
 
 Then look at the **Agents** widget in the bar (it ships in the default Omarchy
@@ -99,11 +99,11 @@ A refresh can be forced without waiting for the timer — this is the exact
 command the service runs:
 
 ```sh
-python3 ~/.config/omarchy/plugins/io.github.am423.hermes-usage/collector/hermes-usage.py --write
+python3 ~/.config/omarchy/plugins/io.github.r0b0tlab.hermes-usage/collector/hermes-usage.py --write
 ```
 
 The plugin registers no IPC target of its own, so `omarchy-shell shell call
-io.github.am423.hermes-usage …` answers `unknown`; that is expected, not a
+io.github.r0b0tlab.hermes-usage …` answers `unknown`; that is expected, not a
 failure.
 
 ### Icon
@@ -118,7 +118,7 @@ Omarchy, not in a plugin.
 ## Uninstall
 
 ```sh
-omarchy plugin remove io.github.am423.hermes-usage
+omarchy plugin remove io.github.r0b0tlab.hermes-usage
 rm ~/.local/state/omarchy/agents/usage/hermes.json
 ```
 
