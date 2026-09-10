@@ -95,11 +95,25 @@ Disclosed in full, because plugins run unsandboxed inside `omarchy-shell`:
 `HERMES_HOME` is honored if you keep Hermes outside `~/.hermes`, and profile
 stores under it are picked up automatically.
 
-A refresh can be triggered on demand:
+A refresh can be forced without waiting for the timer — this is the exact
+command the service runs:
 
 ```sh
-omarchy-shell shell call io.github.am423.hermes-usage refresh
+python3 ~/.config/omarchy/plugins/io.github.am423.hermes-usage/collector/hermes-usage.py --write
 ```
+
+The plugin registers no IPC target of its own, so `omarchy-shell shell call
+io.github.am423.hermes-usage …` answers `unknown`; that is expected, not a
+failure.
+
+### Icon
+
+The panel resolves a provider's mark from its own `assets/<id>.svg`, and
+plugins must not write into the package-owned built-in plugin directory, so
+Hermes falls back to the panel's bar glyph (with one harmless
+`Cannot open: …/agents/assets/hermes.svg` warning in the shell log the first
+time the panel opens). Shipping a `hermes.svg` mark belongs upstream in
+Omarchy, not in a plugin.
 
 ## Uninstall
 
