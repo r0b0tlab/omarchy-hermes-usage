@@ -51,7 +51,7 @@ Item {
     id: collector
     running: false
 
-    onExited: function(exitCode, exitStatus) {
+    onExited: function(exitCode) {
       if (exitCode === 0) {
         root.warnedFailure = false
         return
