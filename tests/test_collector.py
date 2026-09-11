@@ -101,6 +101,17 @@ class CollectorTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_today_counts_exact_with_capped_id_list(self):
+        db = make_store(self.root, sessions=5)
+        conn = hu.connect(db)
+        try:
+            acc = hu.Accumulator()
+            hu.scan_store(conn, acc)
+            self.assertEqual(acc.total_sessions, 5)
+            self.assertGreaterEqual(acc.total_prompts, 5)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

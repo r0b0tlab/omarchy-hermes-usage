@@ -290,10 +290,16 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
             active_ids = [
                 str(row["id"])
                 for row in conn.execute(
-                    f"SELECT id FROM sessions WHERE {activity} >= ?", (today_start,)
+                    f"SELECT id FROM sessions WHERE {activity} >= ? LIMIT {MAX_SESSION_IDS + 1}",
+                    (today_start,),
                 )
-            ]
-            acc.today_sessions += len(active_ids)
+            ][:MAX_SESSION_IDS]
+            acc.today_sessions += int(
+                conn.execute(
+                    f"SELECT COUNT(*) AS n FROM sessions WHERE {activity} >= ?", (today_start,)
+                ).fetchone()["n"]
+                or 0
+            )
         except sqlite3.Error:
             active_ids = []
     else:
