@@ -158,6 +158,46 @@ class CollectorTest(unittest.TestCase):
         import json
         self.assertEqual(json.loads(path.read_text())["schemaVersion"], 1)
 
+    def test_provider_rollup_and_tier_label(self):
+        db = make_store(self.root)  # fixture rows are openai-codex/subscription_included
+        import time
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """INSERT INTO session_model_usage
+            (session_id, model, billing_provider, billing_mode, input_tokens, output_tokens,
+             estimated_cost_usd, first_seen, last_seen)
+            VALUES ('sess-0','other-model','deepseek','',10000,5000,0.77,?,?)""",
+            (time.time() - 100, time.time()),
+        )
+        conn.commit()
+        conn.close()
+        old_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(self.root)
+        try:
+            record = hu.build_record()
+        finally:
+            if old_env is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old_env
+        self.assertEqual(record["scope"], "device")
+        self.assertIn("openai-codex", record["providerUsage"])
+        self.assertIn("deepseek", record["providerUsage"])
+        self.assertEqual(record["tierLabel"], "DeepSeek usage")
+
+    def test_tier_label_subscription_majority(self):
+        make_store(self.root)  # all rows openai-codex/subscription_included
+        old_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(self.root)
+        try:
+            record = hu.build_record()
+        finally:
+            if old_env is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old_env
+        self.assertEqual(record["tierLabel"], "Codex subscription")
+
 
 if __name__ == "__main__":
     unittest.main()

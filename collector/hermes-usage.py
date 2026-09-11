@@ -52,6 +52,8 @@ DAY_MAP_HORIZON_DAYS = 120
 # what the panel is showing instead.
 HERO_LABEL = "Usage breakdown"
 
+PROVIDER_LABELS = {"openai-codex": "Codex", "anthropic": "Anthropic", "nous": "Nous", "deepseek": "DeepSeek", "zai": "Zhipu", "meta-ai": "Meta", "xai": "xAI", "openrouter": "OpenRouter"}
+
 # Hardening budgets. Every query below is LIMITed, every unbounded collection
 # is capped, and the serialized record has a ceiling; see each use site.
 MAX_USAGE_ROWS = 20000          # session_model_usage rows scanned per store
@@ -196,6 +198,11 @@ def clean_model_name(value: Any) -> str:
     return name[:MAX_MODEL_NAME_LEN]
 
 
+def clean_provider(value: Any) -> str:
+    name = str(value or "").strip()[:32]
+    return name or "local"
+
+
 def clean_epoch(value: Any) -> float | None:
     """Seconds-since-epoch or None. Accepts seconds or millis; rejects NaN, negatives, far-future."""
     try:
@@ -220,6 +227,9 @@ class Accumulator:
         self.tokens_by_day: dict[str, float] = {}
         self.tokens_by_model: dict[str, dict[str, int]] = {}
         self.today_tokens_by_model: dict[str, float] = {}
+        self.provider_tokens: dict[str, float] = {}
+        self.provider_sub_tokens: dict[str, float] = {}
+        self.provider_cost: dict[str, float] = {}
         self.session_days: set[str] = set()
         self.total_sessions = 0
         self.total_prompts = 0
@@ -394,6 +404,22 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
         total = float(sum(bucket.values()))
         acc.add_tokens(model, bucket)
 
+        provider = clean_provider(row["billing_provider"] if "billing_provider" in row.keys() else "")
+        acc.provider_tokens[provider] = acc.provider_tokens.get(provider, 0.0) + total
+        try:
+            mode = str(row["billing_mode"] or "")
+        except (IndexError, KeyError):
+            mode = ""
+        if mode == "subscription_included":
+            acc.provider_sub_tokens[provider] = acc.provider_sub_tokens.get(provider, 0.0) + total
+        try:
+            cost = float(row["estimated_cost_usd"] or 0.0)
+        except (TypeError, ValueError, IndexError, KeyError):
+            cost = 0.0
+        if cost != cost or cost < 0:
+            cost = 0.0
+        acc.provider_cost[provider] = min(1e12, acc.provider_cost.get(provider, 0.0) + cost)
+
         session = str(row["session_id"] or "")
         weights = weights_by_session.get(session) or {}
         weight_total = sum(weights.values())
@@ -420,6 +446,20 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
             if day == today:
                 acc.add_today_model(model, share)
 
+
+
+def describe_plan(acc: Accumulator) -> str:
+    """Hero line naming the dominant provider and its plan signal, or the plain label."""
+    if not acc.provider_tokens:
+        return HERO_LABEL
+    total = sum(acc.provider_tokens.values())
+    top, top_tokens = max(acc.provider_tokens.items(), key=lambda item: item[1])
+    if total <= 0 or top_tokens < total / 2:
+        return HERO_LABEL
+    label = PROVIDER_LABELS.get(top, top[:32] or "local")
+    if acc.provider_sub_tokens.get(top, 0.0) >= top_tokens / 2:
+        return f"{label} subscription"
+    return f"{label} usage"
 
 
 def build_record() -> dict[str, Any] | None:
@@ -487,6 +527,17 @@ def build_record() -> dict[str, Any] | None:
         "activeDates": active_dates[-MAX_ACTIVE_DATES:],
         "modelUsage": acc.tokens_by_model,
     }
+    provider_usage = {
+        provider: {
+            "tokens": int(round(tokens)),
+            "subscriptionTokens": int(round(acc.provider_sub_tokens.get(provider, 0.0))),
+            "estimatedCostUsd": round(acc.provider_cost.get(provider, 0.0), 4),
+        }
+        for provider, tokens in sorted(acc.provider_tokens.items(), key=lambda item: item[1], reverse=True)[:MAX_MODELS]
+    }
+    record["providerUsage"] = provider_usage
+    record["scope"] = "device"
+    record["tierLabel"] = describe_plan(acc)
     return record
 
 
