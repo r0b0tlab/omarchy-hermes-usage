@@ -484,10 +484,31 @@ def build_record() -> dict[str, Any] | None:
         "activeDays": max(len(acc.session_days), len(acc.tokens_by_day)),
         # Capped: the panel counts activeDays, while a synced snapshot uses the
         # date list, and a decade of days would only bloat the file.
-        "activeDates": active_dates[-365:],
+        "activeDates": active_dates[-MAX_ACTIVE_DATES:],
         "modelUsage": acc.tokens_by_model,
     }
     return record
+
+
+def serialize_record(record: dict[str, Any]) -> str:
+    """Serialize under MAX_RECORD_BYTES, degrading gracefully (top models win)."""
+    payload = json.dumps(record, separators=(",", ":")) + "\n"
+    if len(payload.encode("utf-8")) <= MAX_RECORD_BYTES:
+        return payload
+    models = record.get("modelUsage") or {}
+    ranked = sorted(models.items(), key=lambda item: sum(item[1].values()), reverse=True)
+    record["modelUsage"] = dict(ranked[:32])
+    record["activeDates"] = (record.get("activeDates") or [])[-90:]
+    record["todayTokensByModel"] = dict(
+        sorted((record.get("todayTokensByModel") or {}).items(), key=lambda item: item[1], reverse=True)[:32]
+    )
+    payload = json.dumps(record, separators=(",", ":")) + "\n"
+    if len(payload.encode("utf-8")) <= MAX_RECORD_BYTES:
+        return payload
+    record["modelUsage"] = {}
+    record["todayTokensByModel"] = {}
+    record["activeDates"] = []
+    return json.dumps(record, separators=(",", ":")) + "\n"
 
 
 def write_record(record: dict[str, Any]) -> Path:

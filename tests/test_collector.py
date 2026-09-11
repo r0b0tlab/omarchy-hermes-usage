@@ -128,6 +128,21 @@ class CollectorTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_record_respects_payload_ceiling(self):
+        db = make_store(self.root, sessions=2)
+        old_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(self.root)
+        try:
+            record = hu.build_record()
+        finally:
+            if old_env is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old_env
+        self.assertIsNotNone(record)
+        payload = hu.serialize_record(record)
+        self.assertLessEqual(len(payload.encode("utf-8")), hu.MAX_RECORD_BYTES)
+
 
 if __name__ == "__main__":
     unittest.main()
