@@ -30,6 +30,18 @@ Item {
     return url
   }
 
+  // Trusted interpreter identity: absolute path, overridable for debugging.
+  // Ambient-PATH lookup is deliberately not used (supply-chain review).
+  readonly property string pythonBinary: {
+    var override = Quickshell.env("HERMES_USAGE_PYTHON")
+    if (override && override.length > 0) return override
+    return "/usr/bin/python3"
+  }
+
+  readonly property int collectorTimeoutSec: 60
+  property bool collecting: false
+  property bool warnedMissingPython: false
+
   // Override for faster polling while developing; 15 minutes is plenty for a
   // usage meter, and the collector only reads local files.
   readonly property int refreshIntervalSec: {
@@ -40,11 +52,13 @@ Item {
   property bool warnedFailure: false
 
   // Also reachable on demand by running the collector directly:
-  //   python3 <plugin dir>/collector/hermes-usage.py --write
+  //   /usr/bin/python3 <plugin dir>/collector/hermes-usage.py --write
   function refresh() {
     if (collector.running) return
-    collector.command = ["python3", collectorPath, "--write"]
+    collector.command = [root.pythonBinary, root.collectorPath, "--write"]
     collector.running = true
+    root.collecting = true
+    watchdog.restart()
   }
 
   Process {
@@ -52,8 +66,15 @@ Item {
     running: false
 
     onExited: function(exitCode) {
+      root.collecting = false
+      watchdog.stop()
       if (exitCode === 0) {
         root.warnedFailure = false
+        return
+      }
+      if ((exitCode === 126 || exitCode === 127) && !root.warnedMissingPython) {
+        root.warnedMissingPython = true
+        console.warn("hermes-usage", "python not found at", root.pythonBinary, "- set HERMES_USAGE_PYTHON to a working interpreter")
         return
       }
       if (!root.warnedFailure) {
@@ -65,8 +86,20 @@ Item {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var text = String(this.text || "").trim()
+        var text = String(this.text || "").trim().slice(0, 2000)
         if (text !== "") console.info("hermes-usage", text)
+      }
+    }
+  }
+
+  Timer {
+    id: watchdog
+    interval: root.collectorTimeoutSec * 1000
+    repeat: false
+    onTriggered: {
+      if (root.collecting) {
+        console.warn("hermes-usage", "collector exceeded deadline, killing")
+        collector.running = false
       }
     }
   }
