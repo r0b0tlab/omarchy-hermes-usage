@@ -196,6 +196,23 @@ def clean_model_name(value: Any) -> str:
     return name[:MAX_MODEL_NAME_LEN]
 
 
+def clean_epoch(value: Any) -> float | None:
+    """Seconds-since-epoch or None. Accepts seconds or millis; rejects NaN, negatives, far-future."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number < 0:
+        return None
+    if number > 4102444800000:  # past year 2100 even in millis: garbage
+        return None
+    if number > 4102444800:  # past 2100-01-01 in seconds: must be millis
+        number /= 1000.0
+    if number > dt.datetime.now().timestamp() + 86400:
+        return None
+    return number
+
+
 class Accumulator:
     """Everything the panel can be shown, gathered across every store."""
 
@@ -357,7 +374,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
     recent_sessions = [
         str(row["session_id"])
         for row in rows
-        if float(row["last_seen"] or 0) >= horizon_start
+        if (clean_epoch(row["last_seen"]) or 0) >= horizon_start
     ][:MAX_SESSION_IDS]
     weights_by_session = message_day_weights(conn, recent_sessions)
 
@@ -387,13 +404,13 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
                 for day, count in sorted(weights.items())
             ]
         else:
-            first_seen = row["first_seen"]
-            last_seen = row["last_seen"]
+            first_seen = clean_epoch(row["first_seen"])
+            last_seen = clean_epoch(row["last_seen"])
             attribution = [
                 (day, weight)
                 for day, weight in split_by_day(
-                    float(first_seen) if first_seen else None,
-                    float(last_seen) if last_seen else None,
+                    first_seen,
+                    last_seen,
                 )
             ]
 

@@ -112,6 +112,22 @@ class CollectorTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_malformed_timestamps_do_not_crash(self):
+        import time
+        db = make_store(self.root, sessions=1, usage_per_session=1, messages_per_session=0)
+        conn = sqlite3.connect(db)
+        now = time.time()
+        conn.execute("UPDATE session_model_usage SET first_seen = -5, last_seen = ?", (now * 1000 * 1000,))
+        conn.commit()
+        conn.close()
+        conn = hu.connect(db)
+        try:
+            acc = hu.Accumulator()
+            hu.scan_store(conn, acc)  # must not raise
+            self.assertGreater(acc.usage_rows, 0)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
