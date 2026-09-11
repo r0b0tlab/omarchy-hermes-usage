@@ -30,10 +30,10 @@ else consumes it.
   showing its prompt and session counts on hover.
 - **Tokens by model** — all-time totals per model, split into input, output,
   cache read, and cache write.
-- **Hero line** — a plain `Usage breakdown` label. Hermes bills across
-  whatever providers are configured, often several at once, so the panel's
-  single plan line would have to pick one of them and quietly mislead about
-  the rest.
+- **Hero line** — the dominant provider and whether its tokens rode a
+  subscription (`Codex subscription`) or metered usage (`DeepSeek usage`);
+  with no dominant provider it stays `Usage breakdown`.
+- **Plan mix** — the hero line names the dominant provider and whether its tokens rode a subscription (`Codex subscription`) or metered usage (`DeepSeek usage`); with no dominant provider it stays `Usage breakdown`. Per-provider tokens, subscription share, and tracked estimated cost ride in the record's `providerUsage` object.
 
 There are no rate-limit meters. Hermes is not queried against a provider usage
 endpoint, so there are no session/weekly windows to draw and the limits section
@@ -65,6 +65,10 @@ not write to.
 | Tokens by model | `session_model_usage` grouped by model (input, output + reasoning, cache read, cache write) |
 | Today's prompts / sessions | `messages` rows with `role = 'user'` today, and sessions with activity today |
 | All-time prompts / sessions / active days | `messages`, `sessions` |
+| Hero plan line | dominant billing_provider/billing_mode in session_model_usage (subscription_included ⇒ subscription) |
+| providerUsage | per-provider tokens + estimated_cost_usd (local estimate, cost_source varies; not a bill) |
+
+No rate-limit windows: Hermes exposes no usage-limits endpoint, so `limits` is `[]`. No balance: Hermes has no prepaid ledger, so no `balance` object is emitted. Cost figures are local estimates (`cost_source` varies by provider), not bills.
 
 Hermes records usage per session and model rather than per message, so a
 session that ran across several days has its counters spread over the days it
@@ -84,22 +88,30 @@ Disclosed in full, because plugins run unsandboxed inside `omarchy-shell`:
 - **Writes** exactly one file:
   `$XDG_STATE_HOME/omarchy/agents/usage/hermes.json`, written to a temp file in
   the same directory and renamed into place.
-- **Runs** one command: `python3 <plugin dir>/collector/hermes-usage.py --write`,
-  every 15 minutes, plus once when the shell starts.
+- **Runs** one command: `/usr/bin/python3 <plugin dir>/collector/hermes-usage.py --write` (override via `HERMES_USAGE_PYTHON`), on shell start and every 15 min; the run is killed after 60 s and its log output truncated.
 - **No network access. No sudo. No other commands. No telemetry.** Nothing
   leaves the machine.
+
+### Bounds
+
+Every input from the local store is budgeted: 20k usage rows/store
+(recent-first), 20k attribution sessions, 64 models (+`other` bucket),
+128-char names, 5M SQLite ops budget, 2 s busy timeout, 256 KiB record
+ceiling, owned no-symlink output dir, single-flight lock.
 
 ## Configuration
 
 `HERMES_USAGE_REFRESH_SEC` overrides the refresh interval (minimum 60).
-`HERMES_HOME` is honored if you keep Hermes outside `~/.hermes`, and profile
+`HERMES_USAGE_PYTHON` overrides the interpreter (`/usr/bin/python3` by
+default; used for debugging or non-standard layouts). `HERMES_HOME` is
+honored if you keep Hermes outside `~/.hermes`, and profile
 stores under it are picked up automatically.
 
 A refresh can be forced without waiting for the timer — this is the exact
 command the service runs:
 
 ```sh
-python3 ~/.config/omarchy/plugins/io.github.r0b0tlab.hermes-usage/collector/hermes-usage.py --write
+/usr/bin/python3 ~/.config/omarchy/plugins/io.github.r0b0tlab.hermes-usage/collector/hermes-usage.py --write
 ```
 
 The plugin registers no IPC target of its own, so `omarchy-shell shell call
