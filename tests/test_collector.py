@@ -143,6 +143,21 @@ class CollectorTest(unittest.TestCase):
         payload = hu.serialize_record(record)
         self.assertLessEqual(len(payload.encode("utf-8")), hu.MAX_RECORD_BYTES)
 
+    def test_write_rejects_symlinked_usage_dir(self):
+        real = self.root / "real"
+        real.mkdir()
+        link = self.root / "usage"
+        os.symlink(real, link)
+        with self.assertRaises(OSError):
+            hu.write_record({"probe": True}, target_dir=link)
+
+    def test_write_roundtrip(self):
+        target = self.root / "usage"
+        path = hu.write_record({"schemaVersion": 1}, target_dir=target)
+        self.assertTrue(path.is_file() and not path.is_symlink())
+        import json
+        self.assertEqual(json.loads(path.read_text())["schemaVersion"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -511,22 +511,49 @@ def serialize_record(record: dict[str, Any]) -> str:
     return json.dumps(record, separators=(",", ":")) + "\n"
 
 
-def write_record(record: dict[str, Any]) -> Path:
-    """Atomic replace, mirroring what omarchy-agent-usage-update does."""
-    target = usage_dir()
+def write_record(record: dict[str, Any], target_dir: Path | None = None) -> Path:
+    """Atomic replace through a validated directory fd.
+
+    Rejects symlinked parents, requires ownership by the effective uid, caps
+    the payload, fsyncs file and directory. Raises OSError on any violation
+    (writes nothing); callers treat that as "no record this run".
+    """
+    target = target_dir if target_dir is not None else usage_dir()
     target.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(record, separators=(",", ":")) + "\n"
-    handle, temporary = tempfile.mkstemp(prefix=f".{AGENT_ID}.", dir=str(target))
+    ident = os.lstat(target)
+    if not os.path.isdir(target) or ident.st_nlink < 1:  # lstat, not stat: symlinks fail closed below
+        raise OSError(f"hermes-usage: refusing unsafe usage dir {target}")
+    import stat as _stat
+    if _stat.S_ISLNK(ident.st_mode):
+        raise OSError(f"hermes-usage: refusing symlinked usage dir {target}")
+    if ident.st_uid != os.geteuid():
+        raise OSError(f"hermes-usage: refusing foreign-owned usage dir {target}")
+    payload = serialize_record(record)
+    data = payload.encode("utf-8")
+    if len(data) > MAX_RECORD_BYTES:
+        raise OSError("hermes-usage: record exceeds payload ceiling after degradation")
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    dir_fd = os.open(target, flags)
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(payload)
-        os.replace(temporary, target / f"{AGENT_ID}.json")
-    except BaseException:
+        if _stat.S_ISLNK(os.fstat(dir_fd).st_mode) or (os.fstat(dir_fd).st_ino != ident.st_ino):
+            raise OSError(f"hermes-usage: usage dir changed under us: {target}")
+        handle, tmp_name = tempfile.mkstemp(prefix=f".{AGENT_ID}.", dir=str(target))
         try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.rename(os.path.basename(tmp_name), f"{AGENT_ID}.json",
+                      src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(os.path.basename(tmp_name), dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
     return target / f"{AGENT_ID}.json"
 
 
@@ -549,7 +576,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.write:
-        path = write_record(record)
+        try:
+            path = write_record(record)
+        except OSError as error:
+            print(f"hermes-usage: {error}", file=sys.stderr)
+            return 1
         print(f"hermes-usage: wrote {path}", file=sys.stderr)
         return 0
 
