@@ -566,6 +566,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limits-only", action="store_true", help="Accepted for omarchy-agent-usage-* compatibility")
     args = parser.parse_args(argv)
 
+    lock = None
+    if args.write:
+        lock_path = usage_dir() / f".{AGENT_ID}.lock"
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock = open(lock_path, "w")
+            try:
+                import fcntl
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (ImportError, OSError):
+                pass  # single-flight is best-effort; the write itself stays atomic
+        except OSError:
+            lock = None
+
     record = build_record()
     if record is None:
         print(
