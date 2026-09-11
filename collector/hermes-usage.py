@@ -107,6 +107,14 @@ def connect(path: Path) -> sqlite3.Connection:
         # with writes disabled at the SQL level.
         conn = sqlite3.connect(str(path), timeout=5)
     conn.execute("PRAGMA query_only = ON")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    ops = {"n": 0}
+
+    def _budget() -> int:
+        ops["n"] += 1
+        return 1 if ops["n"] > SQLITE_OP_BUDGET else 0
+
+    conn.set_progress_handler(_budget, 10000)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -175,6 +183,19 @@ def empty_bucket() -> dict[str, int]:
     }
 
 
+def clamp_token(value: Any) -> int:
+    try:
+        number = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(number, MAX_TOKEN_VALUE))
+
+
+def clean_model_name(value: Any) -> str:
+    name = str(value or "unknown").strip() or "unknown"
+    return name[:MAX_MODEL_NAME_LEN]
+
+
 class Accumulator:
     """Everything the panel can be shown, gathered across every store."""
 
@@ -192,9 +213,11 @@ class Accumulator:
         self.days_scanned = 0
 
     def add_tokens(self, model: str, bucket: dict[str, int]) -> None:
+        if model not in self.tokens_by_model and len(self.tokens_by_model) >= MAX_MODELS:
+            model = "other"
         target = self.tokens_by_model.setdefault(model, empty_bucket())
         for key, value in bucket.items():
-            target[key] += int(value)
+            target[key] = clamp_token(target[key] + clamp_token(value))
 
     def add_day(self, day: dt.date, tokens: float) -> None:
         if tokens <= 0:
@@ -262,7 +285,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
                 f" COUNT(*) AS n FROM sessions GROUP BY day"
             )
             for row in rows:
-                if row["day"]:
+                if row["day"] and len(acc.session_days) < 730:
                     acc.session_days.add(str(row["day"]))
             active_ids = [
                 str(row["id"])
@@ -304,14 +327,24 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
     if not has_table(conn, "session_model_usage"):
         return
 
-    rows = list(
-        conn.execute(
-            "SELECT session_id, model,"
+    try:
+        cursor = conn.execute(
+            "SELECT session_id, model, billing_provider, billing_mode,"
             " input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,"
-            " reasoning_tokens, first_seen, last_seen"
-            " FROM session_model_usage"
+            " reasoning_tokens, estimated_cost_usd, actual_cost_usd, cost_status,"
+            " first_seen, last_seen"
+            " FROM session_model_usage ORDER BY last_seen DESC"
+            f" LIMIT {MAX_USAGE_ROWS + 1}"
         )
-    )
+    except sqlite3.Error:
+        return
+    rows = []
+    seen = 0
+    for row in cursor:
+        seen += 1
+        if seen > MAX_USAGE_ROWS:
+            break
+        rows.append(row)
     acc.usage_rows += len(rows)
     acc.days_scanned += 1
 
@@ -319,15 +352,16 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
         str(row["session_id"])
         for row in rows
         if float(row["last_seen"] or 0) >= horizon_start
-    ]
+    ][:MAX_SESSION_IDS]
     weights_by_session = message_day_weights(conn, recent_sessions)
 
     for row in rows:
-        model = str(row["model"] or "unknown")
-        input_tokens = int(row["input_tokens"] or 0)
-        output_tokens = int(row["output_tokens"] or 0) + int(row["reasoning_tokens"] or 0)
-        cache_read = int(row["cache_read_tokens"] or 0)
-        cache_write = int(row["cache_write_tokens"] or 0)
+        model = clean_model_name(row["model"])
+        input_tokens = clamp_token(row["input_tokens"])
+        output_tokens = clamp_token(row["output_tokens"]) + clamp_token(row["reasoning_tokens"])
+        output_tokens = clamp_token(output_tokens)
+        cache_read = clamp_token(row["cache_read_tokens"])
+        cache_write = clamp_token(row["cache_write_tokens"])
         bucket = {
             "inputTokens": input_tokens,
             "outputTokens": output_tokens,

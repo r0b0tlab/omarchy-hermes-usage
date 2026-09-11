@@ -75,6 +75,32 @@ class CollectorTest(unittest.TestCase):
         # NOTE: constants below are defined in Task 2; this fails until then.
         self.assertTrue(hasattr(hu, "MAX_USAGE_ROWS"))
 
+    def test_usage_scan_is_bounded(self):
+        db = make_store(self.root, sessions=2, usage_per_session=2)
+        conn = hu.connect(db)
+        try:
+            acc = hu.Accumulator()
+            hu.scan_store(conn, acc)
+            self.assertEqual(acc.usage_rows, 4)
+            self.assertLessEqual(len(acc.tokens_by_model), hu.MAX_MODELS)
+        finally:
+            conn.close()
+
+    def test_huge_model_name_is_truncated(self):
+        db = make_store(self.root)
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE session_model_usage SET model = ?", ("x" * 10000,))
+        conn.commit()
+        conn.close()
+        conn = hu.connect(db)
+        try:
+            acc = hu.Accumulator()
+            hu.scan_store(conn, acc)
+            for name in acc.tokens_by_model:
+                self.assertLessEqual(len(name), hu.MAX_MODEL_NAME_LEN)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
