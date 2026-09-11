@@ -52,6 +52,18 @@ DAY_MAP_HORIZON_DAYS = 120
 # what the panel is showing instead.
 HERO_LABEL = "Usage breakdown"
 
+# Hardening budgets. Every query below is LIMITed, every unbounded collection
+# is capped, and the serialized record has a ceiling; see each use site.
+MAX_USAGE_ROWS = 20000          # session_model_usage rows scanned per store
+MAX_SESSION_IDS = 20000         # session ids held for prompt attribution
+MAX_MODELS = 64                 # distinct models kept in modelUsage
+MAX_MODEL_NAME_LEN = 128        # model/provider label characters kept
+MAX_TOKEN_VALUE = 2**53         # per-counter clamp (exact in float64/JSON)
+MAX_ACTIVE_DATES = 365          # dates kept in activeDates (existing cap, now named)
+MAX_RECORD_BYTES = 262144       # 256 KiB serialized payload ceiling
+SQLITE_OP_BUDGET = 5_000_000   # SQLite VM ops per connection before abort
+SQLITE_BUSY_TIMEOUT_MS = 2000  # don't wedge the shell on a locked live store
+
 
 def expand(value: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(value)))
