@@ -6,10 +6,56 @@ import time
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
-from test_collector import hu, CollectorTest
+from test_collector import hu
+from fixtures import make_store
+import tempfile
 
 
-class DetailsTest(CollectorTest):
+class DetailsTest(TestCase):
+    def test_bounds_and_partial_scans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = make_store(Path(tmp), sessions=1, usage_per_session=100, messages_per_session=0)
+            with sqlite3.connect(db) as c:
+                for i in range(100):
+                    c.execute('UPDATE session_model_usage SET model=?, billing_provider=?, task=? WHERE rowid=?',
+                              (str(i), str(i), str(i), i + 1))
+            c.close()
+            conn = hu.connect(db); acc = hu.Accumulator()
+            try:
+                hu.scan_store(conn, acc)
+            finally:
+                conn.close()
+            self.assertLessEqual(len(acc.today_tokens_by_model), hu.MAX_MODELS)
+            self.assertLessEqual(len(acc.provider_tokens), hu.MAX_MODELS)
+            self.assertLessEqual(len(acc.task_details), 32)
+            conn = hu.connect(db); acc = hu.Accumulator()
+            try:
+                with patch.object(hu, 'MAX_USAGE_ROWS', 2): hu.scan_store(conn, acc)
+            finally:
+                conn.close()
+            self.assertTrue(acc.truncated)
+
+    def test_serializer_final_cap(self):
+        with self.assertRaises(ValueError):
+            hu.serialize_record({'details': {'huge': 'x' * (hu.MAX_RECORD_BYTES + 1)}})
+
+    def test_sql_budget_counts_vm_ops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = make_store(Path(tmp))
+            with patch.object(hu, 'SQLITE_OP_BUDGET', 10000):
+                c = hu.connect(db)
+                try:
+                    with self.assertRaises(sqlite3.OperationalError):
+                        c.execute('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT sum(x) FROM n').fetchone()
+                finally:
+                    c.close()
+
+    def test_history_not_current_plan(self):
+        acc = hu.Accumulator()
+        acc.provider_tokens['openai-codex'] = 100
+        acc.provider_sub_tokens['openai-codex'] = 100
+        self.assertEqual(hu.describe_plan(acc), 'Historical provider mix')
+
     def test_mixed_status_real_hermes_upsert(self):
         source = Path('/home/r0b0tmagic/.hermes/hermes-agent/hermes_state_usage.py')
         tree = ast.parse(source.read_text())

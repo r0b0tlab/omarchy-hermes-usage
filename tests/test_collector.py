@@ -30,6 +30,7 @@ class CollectorTest(unittest.TestCase):
         db = make_store(self.root, sessions=1, usage_per_session=1)
         with sqlite3.connect(db) as c:
             c.execute('UPDATE session_model_usage SET output_tokens=50, reasoning_tokens=40')
+        c.close()
         conn = hu.connect(db)
         try:
             acc = hu.Accumulator()
@@ -151,7 +152,7 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(record["scope"], "device")
         self.assertIn("openai-codex", record["providerUsage"])
         self.assertIn("deepseek", record["providerUsage"])
-        self.assertEqual(record["tierLabel"], "DeepSeek usage")
+        self.assertEqual(record["tierLabel"], "Historical provider mix")
 
     def test_tier_label_subscription_majority(self):
         make_store(self.root)  # all rows openai-codex/subscription_included
@@ -164,7 +165,7 @@ class CollectorTest(unittest.TestCase):
                 del os.environ["HERMES_HOME"]
             else:
                 os.environ["HERMES_HOME"] = old_env
-        self.assertEqual(record["tierLabel"], "Codex subscription")
+        self.assertEqual(record["tierLabel"], "Historical provider mix")
 
     def test_stderr_is_capped(self):
         import io as _io

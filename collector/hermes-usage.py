@@ -58,6 +58,9 @@ PROVIDER_LABELS = {"openai-codex": "Codex", "anthropic": "Anthropic", "nous": "N
 
 # Hardening budgets. Every query below is LIMITed, every unbounded collection
 # is capped, and the serialized record has a ceiling; see each use site.
+MAX_STORES = 32
+MAX_PROFILE_ENTRIES = 128
+MAX_DAY_GROUPS = 20000
 MAX_USAGE_ROWS = 20000          # session_model_usage rows scanned per store
 MAX_SESSION_IDS = 20000         # session ids held for prompt attribution
 MAX_MODELS = 64                 # distinct models kept in modelUsage
@@ -117,16 +120,22 @@ def usage_dir() -> Path:
     return state_home() / "omarchy" / "agents" / "usage"
 
 
-def store_paths() -> list[Path]:
+def store_paths(acc=None) -> list[Path]:
     """Every Hermes session store on this machine, primary profile first."""
     home = hermes_home()
     candidates = [home / "state.db"]
     profiles = home / "profiles"
     if profiles.is_dir():
         try:
-            candidates.extend(sorted(p / "state.db" for p in profiles.iterdir() if p.is_dir()))
+            with os.scandir(profiles) as entries:
+                for i, entry in enumerate(entries):
+                    if i >= MAX_PROFILE_ENTRIES or len(candidates) >= MAX_STORES:
+                        if acc is not None: acc.truncated = True
+                        break
+                    if entry.is_dir(follow_symlinks=False):
+                        candidates.append(Path(entry.path) / 'state.db')
         except OSError:
-            pass
+            if acc is not None: acc.truncated = True
     found: list[Path] = []
     for path in candidates:
         if path.is_file() and path not in found:
@@ -147,7 +156,7 @@ def connect(path: Path) -> sqlite3.Connection:
     ops = {"n": 0}
 
     def _budget() -> int:
-        ops["n"] += 1
+        ops["n"] += 10000
         return 1 if ops["n"] > SQLITE_OP_BUDGET else 0
 
     conn.set_progress_handler(_budget, 10000)
@@ -222,7 +231,7 @@ def empty_bucket() -> dict[str, int]:
 def clamp_token(value: Any) -> int:
     try:
         number = int(value or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     return max(0, min(number, MAX_TOKEN_VALUE))
 
@@ -241,7 +250,7 @@ def clean_epoch(value: Any) -> float | None:
     """Seconds-since-epoch or None. Accepts seconds or millis; rejects NaN, negatives, far-future."""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if number != number or number < 0:
         return None
@@ -319,7 +328,7 @@ class Accumulator:
         self.truncated = False
 
     def add_tokens(self, model: str, bucket: dict[str, int]) -> None:
-        if model not in self.tokens_by_model and len(self.tokens_by_model) >= MAX_MODELS:
+        if model not in self.tokens_by_model and len(self.tokens_by_model) >= MAX_MODELS - 1:
             model = "other"
         target = self.tokens_by_model.setdefault(model, empty_bucket())
         for key, value in bucket.items():
@@ -329,22 +338,28 @@ class Accumulator:
         if tokens <= 0:
             return
         key = day_string(day)
+        if key not in self.tokens_by_day and len(self.tokens_by_day) >= 36600:
+            self.truncated = True
+            return
         self.tokens_by_day[key] = self.tokens_by_day.get(key, 0.0) + tokens
 
     def add_today_model(self, model: str, tokens: float) -> None:
         if tokens <= 0:
             return
+        if model not in self.today_tokens_by_model and len(self.today_tokens_by_model) >= MAX_MODELS - 1:
+            model = "other"
         self.today_tokens_by_model[model] = self.today_tokens_by_model.get(model, 0.0) + tokens
         self.today_total_tokens += tokens
 
 
-def message_day_weights(conn: sqlite3.Connection, session_ids: Iterable[str]) -> dict[str, dict[str, int]]:
+def message_day_weights(conn: sqlite3.Connection, session_ids: Iterable[str], acc=None) -> dict[str, dict[str, int]]:
     """Assistant messages per session per local day — the activity shape used
     to place a session's token counters on the calendar."""
     ids = [str(value) for value in session_ids]
     if not ids or not has_table(conn, "messages"):
         return {}
     weights: dict[str, dict[str, int]] = {}
+    groups = 0
     # Chunked so a large history cannot blow past SQLite's variable limit.
     for start in range(0, len(ids), 400):
         chunk = ids[start : start + 400]
@@ -355,12 +370,17 @@ def message_day_weights(conn: sqlite3.Connection, session_ids: Iterable[str]) ->
                 " date(timestamp, 'unixepoch', 'localtime') AS day,"
                 " COUNT(*) AS messages"
                 f" FROM messages WHERE role = 'assistant' AND session_id IN ({placeholders})"
-                " GROUP BY session_id, day",
+                f" GROUP BY session_id, day LIMIT {MAX_DAY_GROUPS + 1}",
                 chunk,
             )
         except sqlite3.Error:
+            if acc is not None: acc.truncated = True
             return weights
         for row in rows:
+            groups += 1
+            if groups > MAX_DAY_GROUPS:
+                if acc is not None: acc.truncated = True
+                return weights
             session = str(row["session_id"])
             day = str(row["day"] or "")
             if not day:
@@ -407,6 +427,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
                 or 0
             )
         except sqlite3.Error:
+            acc.truncated = True
             active_ids = []
     else:
         active_ids = []
@@ -434,7 +455,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
                     or 0
                 )
         except sqlite3.Error:
-            pass
+            acc.truncated = True
 
     if not has_table(conn, "session_model_usage"):
         return
@@ -449,12 +470,14 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
         cursor = conn.execute('SELECT ' + selection +
                               f' FROM session_model_usage ORDER BY last_seen DESC LIMIT {MAX_USAGE_ROWS + 1}')
     except sqlite3.Error:
+        acc.truncated = True
         return
     rows = []
     seen = 0
     for row in cursor:
         seen += 1
         if seen > MAX_USAGE_ROWS:
+            acc.truncated = True
             break
         rows.append(row)
     acc.usage_rows += len(rows)
@@ -465,7 +488,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
         for row in rows
         if (clean_epoch(row["last_seen"]) or 0) >= horizon_start
     ][:MAX_SESSION_IDS]
-    weights_by_session = message_day_weights(conn, recent_sessions)
+    weights_by_session = message_day_weights(conn, recent_sessions, acc)
 
     for row in rows:
         model = clean_model_name(row["model"])
@@ -486,6 +509,8 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
         add_group(acc.provider_details, row['billing_provider'] or 'unknown', row, total)
 
         provider = clean_provider(row["billing_provider"] if "billing_provider" in row.keys() else "")
+        if provider not in acc.provider_tokens and len(acc.provider_tokens) >= MAX_MODELS - 1:
+            provider = "other"
         acc.provider_tokens[provider] = acc.provider_tokens.get(provider, 0.0) + total
         try:
             mode = str(row["billing_mode"] or "")
@@ -493,12 +518,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
             mode = ""
         if mode == "subscription_included":
             acc.provider_sub_tokens[provider] = acc.provider_sub_tokens.get(provider, 0.0) + total
-        try:
-            cost = float(row["estimated_cost_usd"] or 0.0)
-        except (TypeError, ValueError, IndexError, KeyError):
-            cost = 0.0
-        if cost != cost or cost < 0:
-            cost = 0.0
+        cost = finite_cost(row["estimated_cost_usd"]) or 0.0
         acc.provider_cost[provider] = min(1e12, acc.provider_cost.get(provider, 0.0) + cost)
 
         session = str(row["session_id"] or "")
@@ -530,36 +550,29 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
 
 
 def describe_plan(acc: Accumulator) -> str:
-    """Hero line naming the dominant provider and its plan signal, or the plain label."""
-    if not acc.provider_tokens:
-        return HERO_LABEL
-    total = sum(acc.provider_tokens.values())
-    top, top_tokens = max(acc.provider_tokens.items(), key=lambda item: item[1])
-    if total <= 0 or top_tokens < total / 2:
-        return HERO_LABEL
-    label = PROVIDER_LABELS.get(top, top[:32] or "local")
-    if acc.provider_sub_tokens.get(top, 0.0) >= top_tokens / 2:
-        return f"{label} subscription"
-    return f"{label} usage"
+    """Historical activity is not evidence of a current subscription."""
+    return "Historical provider mix" if acc.provider_tokens else HERO_LABEL
 
 
 def build_record() -> dict[str, Any] | None:
-    stores = store_paths()
+    acc = Accumulator()
+    stores = store_paths(acc)
     if not stores:
         return None
 
-    acc = Accumulator()
     scanned = 0
     for path in stores:
         try:
             conn = connect(path)
         except sqlite3.Error as error:
+            acc.truncated = True
             print(f"hermes-usage: cannot read {path}: {error}", file=sys.stderr)
             continue
         try:
             scan_store(conn, acc)
             scanned += 1
         except sqlite3.Error as error:
+            acc.truncated = True
             print(f"hermes-usage: skipping {path}: {error}", file=sys.stderr)
         finally:
             conn.close()
@@ -630,7 +643,7 @@ def build_record() -> dict[str, Any] | None:
 
 def serialize_record(record: dict[str, Any]) -> str:
     """Serialize under MAX_RECORD_BYTES, degrading gracefully (top models win)."""
-    payload = json.dumps(record, separators=(",", ":")) + "\n"
+    payload = json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n"
     if len(payload.encode("utf-8")) <= MAX_RECORD_BYTES:
         return payload
     models = record.get("modelUsage") or {}
@@ -640,13 +653,16 @@ def serialize_record(record: dict[str, Any]) -> str:
     record["todayTokensByModel"] = dict(
         sorted((record.get("todayTokensByModel") or {}).items(), key=lambda item: item[1], reverse=True)[:32]
     )
-    payload = json.dumps(record, separators=(",", ":")) + "\n"
+    payload = json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n"
     if len(payload.encode("utf-8")) <= MAX_RECORD_BYTES:
         return payload
     record["modelUsage"] = {}
     record["todayTokensByModel"] = {}
     record["activeDates"] = []
-    return json.dumps(record, separators=(",", ":")) + "\n"
+    payload = json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n"
+    if len(payload.encode("utf-8")) > MAX_RECORD_BYTES:
+        raise ValueError("record exceeds payload ceiling")
+    return payload
 
 
 def write_record(record: dict[str, Any], target_dir: Path | None = None) -> Path:
@@ -737,8 +753,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hermes-usage: wrote {path}", file=sys.stderr)
         return 0
 
-    json.dump(record, sys.stdout, separators=(",", ":"))
-    sys.stdout.write("\n")
+    try:
+        sys.stdout.write(serialize_record(record))
+    except ValueError:
+        return 1
     return 0
 
 
