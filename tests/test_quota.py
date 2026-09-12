@@ -51,6 +51,14 @@ class QuotaTest(TestCase):
             (root / 'linked').symlink_to(root / 'profile', target_is_directory=True)
             with self.assertRaises(OSError): q.write_snapshot(root / 'linked' / 'usage-export', 'nous', r)
 
+    def test_real_hermes_window_labels_preserve_scope(self):
+        from datetime import datetime, timezone
+        e=load('exporter'); now=float(int(time.time()))
+        for label in ('Current session','Current week','Opus week','Sonnet week','API key quota'):
+            snap=NS(provider='anthropic',fetched_at=datetime.fromtimestamp(now,timezone.utc),
+                    unavailable_reason=None,windows=[NS(label=label,used_percent=80,reset_at=None)])
+            self.assertEqual(e.normalize(snap,'anthropic',now)['windows'][0]['label'].lower(),label.lower())
+
     def test_nous_fresh_typed_credit_and_restricted_access(self):
         from datetime import datetime, timezone
         e = load('exporter'); now = float(int(time.time()))

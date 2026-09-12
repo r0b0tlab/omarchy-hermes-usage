@@ -8,7 +8,7 @@ q = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(q)
 
 PLANS = {'free', 'plus', 'pro', 'team', 'business', 'enterprise', 'max', 'starter', 'standard', 'premium'}
-LABELS = {'5 hour', '5-hour', 'session', 'weekly', '7 day', '7-day', 'subscription', 'primary', 'secondary', 'all models', 'sonnet', 'opus'}
+LABELS = {'5 hour', '5-hour', 'session', 'weekly', '7 day', '7-day', 'subscription', 'primary', 'secondary', 'all models', 'sonnet', 'opus', 'current session', 'current week', 'opus week', 'sonnet week', 'api key quota'}
 
 
 def setup(parser):
