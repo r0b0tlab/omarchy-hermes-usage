@@ -39,7 +39,6 @@ import math
 import os
 import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -298,7 +297,7 @@ def add_detail(bucket, row, total):
     # Hermes UPSERT sums these independently; status only describes latest update.
     for key, column in (('estimatedUsd', 'estimated_cost_usd'), ('actualUsd', 'actual_cost_usd')):
         value = finite_cost(row[column])
-        if value is not None:
+        if value is not None and (value > 0 or row['cost_status'] == ('estimated' if key == 'estimatedUsd' else 'actual')):
             bucket[key] = min(1e12, (bucket[key] or 0) + value)
     status = row['cost_status']
     bucket['latestStatusRows'][status if status in ('estimated', 'actual', 'included') else 'unknown'] += 1
@@ -687,49 +686,14 @@ def serialize_record(record: dict[str, Any]) -> str:
 
 
 def write_record(record: dict[str, Any], target_dir: Path | None = None) -> Path:
-    """Atomic replace through a validated directory fd.
-
-    Rejects symlinked parents, requires ownership by the effective uid, caps
-    the payload, fsyncs file and directory. Raises OSError on any violation
-    (writes nothing); callers treat that as "no record this run".
-    """
+    """Atomically publish under retained, validated nofollow directory handles."""
     target = target_dir if target_dir is not None else usage_dir()
-    target.mkdir(parents=True, exist_ok=True)
-    ident = os.lstat(target)
-    if not os.path.isdir(target) or ident.st_nlink < 1:  # lstat, not stat: symlinks fail closed below
-        raise OSError(f"hermes-usage: refusing unsafe usage dir {target}")
-    import stat as _stat
-    if _stat.S_ISLNK(ident.st_mode):
-        raise OSError(f"hermes-usage: refusing symlinked usage dir {target}")
-    if ident.st_uid != os.geteuid():
-        raise OSError(f"hermes-usage: refusing foreign-owned usage dir {target}")
-    payload = serialize_record(record)
-    data = payload.encode("utf-8")
-    if len(data) > MAX_RECORD_BYTES:
-        raise OSError("hermes-usage: record exceeds payload ceiling after degradation")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    dir_fd = os.open(target, flags)
     try:
-        if _stat.S_ISLNK(os.fstat(dir_fd).st_mode) or (os.fstat(dir_fd).st_ino != ident.st_ino):
-            raise OSError(f"hermes-usage: usage dir changed under us: {target}")
-        handle, tmp_name = tempfile.mkstemp(prefix=f".{AGENT_ID}.", dir=str(target))
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.rename(os.path.basename(tmp_name), f"{AGENT_ID}.json",
-                      src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except BaseException:
-            try:
-                os.unlink(os.path.basename(tmp_name), dir_fd=dir_fd)
-            except OSError:
-                pass
-            raise
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-    return target / f"{AGENT_ID}.json"
+        payload = serialize_record(record).encode('utf-8')
+    except ValueError as error:
+        raise OSError('record exceeds payload ceiling') from error
+    quota_io.atomic_write(target, AGENT_ID + '.json', payload)
+    return target / (AGENT_ID + '.json')
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -742,20 +706,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limits-only", action="store_true", help="Accepted for omarchy-agent-usage-* compatibility")
     args = parser.parse_args(argv)
 
-    lock = None
-    if args.write:
-        lock_path = usage_dir() / f".{AGENT_ID}.lock"
-        try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            lock = open(lock_path, "w")
-            try:
-                import fcntl
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (ImportError, OSError):
-                pass  # single-flight is best-effort; the write itself stays atomic
-        except OSError:
-            lock = None
-
+    # Cross-instance lifecycle lock is owned by the supervisor, not this worker.
     record = build_record()
     if record is None:
         print(

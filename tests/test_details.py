@@ -35,6 +35,23 @@ class DetailsTest(TestCase):
                 conn.close()
             self.assertTrue(acc.truncated)
 
+    def test_unknown_default_cost_zero_is_not_observation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = make_store(Path(tmp), sessions=1, usage_per_session=1)
+            with sqlite3.connect(db) as c:
+                c.execute('UPDATE session_model_usage SET estimated_cost_usd=0, actual_cost_usd=0, cost_status=NULL')
+            c.close()
+            c = hu.connect(db); acc = hu.Accumulator()
+            try: hu.scan_store(c, acc)
+            finally: c.close()
+            self.assertIsNone(acc.details['estimatedUsd'])
+            self.assertIsNone(acc.details['actualUsd'])
+
+    def test_collector_rejects_writable_ancestor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / 'unsafe'; parent.mkdir(mode=0o777); parent.chmod(0o777)
+            with self.assertRaises(OSError): hu.write_record({'id': 'hermes'}, parent / 'usage')
+
     def test_serializer_final_cap(self):
         with self.assertRaises(ValueError):
             hu.serialize_record({'details': {'huge': 'x' * (hu.MAX_RECORD_BYTES + 1)}})
