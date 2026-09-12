@@ -96,6 +96,46 @@ class QuotaTest(TestCase):
         self.assertFalse(args.allow_network)
         self.assertEqual(calls[0][3](args), 2)
 
+    def test_hostile_files_and_swapped_parent_fail_closed(self):
+        q=load('quota_io'); now=float(int(time.time()))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); folder=root/'profile/usage-export'; r=q.unavailable('nous',now)
+            q.write_snapshot(folder,'nous',r); target=folder/'nous.json'
+            for raw in (b'['*1000+b']'*1000, b'{"huge":'+b'9'*5000+b'}', b'x'*16385,
+                        b'null', b'[]', b'{"windows":[true]}'):
+                target.write_bytes(raw)
+                self.assertIsNone(q.read_snapshot(folder,'nous',now))
+            target.unlink(); os.mkfifo(target)
+            self.assertIsNone(q.read_snapshot(folder,'nous',now))
+            target.unlink(); target.symlink_to(root/'outside')
+            self.assertIsNone(q.read_snapshot(folder,'nous',now)); target.unlink()
+            q.write_snapshot(folder,'nous',r); target.chmod(0o666)
+            self.assertIsNone(q.read_snapshot(folder,'nous',now)); target.chmod(0o600)
+            outside=root/'outside'; outside.mkdir()
+            original=q.os.replace
+            def swap(src,dst,**kw):
+                (root/'profile').rename(root/'moved')
+                (root/'profile').symlink_to(outside,target_is_directory=True)
+                return original(src,dst,**kw)
+            with patch.object(q.os,'replace',side_effect=swap):
+                with self.assertRaises(OSError): q.write_snapshot(folder,'nous',r)
+            self.assertEqual(list(outside.iterdir()),[])
+            self.assertEqual(list((root/'moved/usage-export').glob('.quota-*')),[])
+            self.assertIsNone(q.read_snapshot(folder,'nous',now))
+
+    def test_invalid_windows_and_expiry_filter(self):
+        q=load('quota_io'); now=float(int(time.time())); r=q.unavailable('openai-codex',now)
+        good=dict(label='Session',usedPercent=80,remainingPercent=20,resetAt=now+100)
+        r.update(available=True,status='observed',windows=[good])
+        for key,value in [('usedPercent',True),('usedPercent',float('inf')),('usedPercent',101),
+                          ('remainingPercent',99),('resetAt',False),('label','bad\u202elabel')]:
+            bad=dict(r,windows=[dict(good,**{key:value})])
+            self.assertIsNone(q.validate(bad,'openai-codex',now))
+        expired=q.validate(dict(r,windows=[dict(good,resetAt=now-1)]),'openai-codex',now)
+        self.assertFalse(expired['available']); self.assertEqual(expired['windows'],[])
+        self.assertIsNone(q.validate(r,'anthropic',now))
+        self.assertIsNone(q.validate(r,'openai-codex',now+601))
+
     def test_strict_schema(self):
         q = load('quota_io')
         self.assertIsNotNone(q, 'strict quota schema missing')

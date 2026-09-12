@@ -76,11 +76,11 @@ MAX_ACTIVE_DATES = 365          # dates kept in activeDates (existing cap, now n
 MAX_RECORD_BYTES = 262144       # 256 KiB serialized payload ceiling
 SQLITE_OP_BUDGET = 5_000_000   # SQLite VM ops per connection before abort
 SQLITE_BUSY_TIMEOUT_MS = 2000  # don't wedge the shell on a locked live store
-MAX_STDERR_BYTES = 8192  # max characters a single run may send to stderr
+MAX_STDERR_BYTES = 8192  # max UTF-8 bytes a single run may send to stderr
 
 
 class CappedStderr(io.TextIOBase):
-    """Write-through stderr that stops after MAX_STDERR_BYTES characters.
+    """Write-through stderr that stops after MAX_STDERR_BYTES UTF-8 bytes.
 
     Bounds what one run can ever send to the shell at the source, so no
     consumer can accumulate more than this per run regardless of database
@@ -95,8 +95,8 @@ class CappedStderr(io.TextIOBase):
     def write(self, text: str) -> int:
         if self._written < self._limit:
             room = self._limit - self._written
-            chunk = text[:room]
-            self._written += len(chunk)
+            chunk = text[:room].encode("utf-8", "replace")[:room].decode("utf-8", "ignore")
+            self._written += len(chunk.encode("utf-8"))
             try:
                 self._inner.write(chunk)
             except (OSError, ValueError):
@@ -171,19 +171,13 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    try:
-        return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
-    except sqlite3.Error:
-        return set()
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def has_table(conn: sqlite3.Connection, table: str) -> bool:
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-        ).fetchone()
-    except sqlite3.Error:
-        return False
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
     return row is not None
 
 
@@ -405,19 +399,23 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
     message_columns = columns(conn, "messages")
 
     if has_table(conn, "sessions"):
-        activity = "COALESCE(last_activity_at, ended_at, started_at)"
-        if "last_activity_at" not in session_columns:
-            activity = "COALESCE(ended_at, started_at)"
+        times = [k for k in ('last_activity_at', 'ended_at', 'started_at') if k in session_columns]
+        activity = ('COALESCE(' + ','.join(times) + ')') if len(times) > 1 else (times[0] if times else 'NULL')
+        started = 'started_at' if 'started_at' in session_columns else 'NULL'
+        if not times: acc.truncated = True
         try:
             acc.total_sessions += int(
                 conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] or 0
             )
             rows = conn.execute(
-                f"SELECT date(started_at, 'unixepoch', 'localtime') AS day,"
-                f" COUNT(*) AS n FROM sessions GROUP BY day"
+                f"SELECT date({started}, 'unixepoch', 'localtime') AS day,"
+                f" COUNT(*) AS n FROM sessions GROUP BY day LIMIT 732"
             )
             for row in rows:
-                if row["day"] and len(acc.session_days) < 730:
+                if row["day"]:
+                    if len(acc.session_days) >= 730:
+                        acc.truncated = True
+                        break
                     acc.session_days.add(str(row["day"]))
             active_ids = [
                 str(row["id"])
@@ -570,7 +568,7 @@ def build_record() -> dict[str, Any] | None:
     acc = Accumulator()
     stores = store_paths(acc)
     accounts = account_snapshots(dt.datetime.now().timestamp())
-    if not stores and not accounts:
+    if not stores and not accounts and not acc.truncated:
         return None
 
     scanned = 0
@@ -589,9 +587,6 @@ def build_record() -> dict[str, Any] | None:
             print(f"hermes-usage: skipping {path}: {error}", file=sys.stderr)
         finally:
             conn.close()
-
-    if scanned == 0 and not accounts and not stores:
-        return None
 
     days = recent_dates()
     recent = [
@@ -653,6 +648,7 @@ def build_record() -> dict[str, Any] | None:
     record["tierLabel"] = describe_plan(acc)
     record['accounts'] = accounts
     if scanned == 0:
+        record['details']['totals'] = {}
         record['hasLocalStats'] = False
         record['hasPromptStats'] = False
         for key in ('todayPrompts', 'todaySessions', 'todayTotalTokens', 'todayTokensByModel',

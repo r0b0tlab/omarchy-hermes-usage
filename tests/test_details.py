@@ -52,6 +52,29 @@ class DetailsTest(TestCase):
             parent = Path(tmp) / 'unsafe'; parent.mkdir(mode=0o777); parent.chmod(0o777)
             with self.assertRaises(OSError): hu.write_record({'id': 'hermes'}, parent / 'usage')
 
+    def test_corrupt_store_reports_partial_not_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp); (home/'state.db').write_bytes(b'not sqlite')
+            with patch.dict(hu.os.environ, HERMES_HOME=str(home)):
+                record=hu.build_record()
+            self.assertTrue(record['details']['truncated'])
+
+    def test_stderr_caps_utf8_bytes(self):
+        import io
+        stream=io.StringIO(); capped=hu.CappedStderr(stream,10)
+        capped.write('é'*100)
+        self.assertLessEqual(len(stream.getvalue().encode()),10)
+
+    def test_old_session_time_columns(self):
+        c=sqlite3.connect(':memory:'); c.row_factory=sqlite3.Row
+        c.execute('CREATE TABLE sessions(id, started_at)')
+        c.execute("INSERT INTO sessions VALUES ('s', ?)",(time.time(),))
+        acc=hu.Accumulator()
+        try: hu.scan_store(c,acc)
+        finally: c.close()
+        self.assertEqual(acc.today_sessions,1)
+        self.assertFalse(acc.truncated)
+
     def test_serializer_final_cap(self):
         with self.assertRaises(ValueError):
             hu.serialize_record({'details': {'huge': 'x' * (hu.MAX_RECORD_BYTES + 1)}})
