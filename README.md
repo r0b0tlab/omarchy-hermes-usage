@@ -5,6 +5,13 @@ themed **Usage Details** window for calls, tasks, provider breakdowns, independe
 cost counters, and explicitly exported account allowances. No package-owned UI
 is changed, and no extra agent records/tabs are fabricated.
 
+![Hermes Usage Details synthetic preview](preview.png)
+
+Details preview uses synthetic fixture data; not an account statement.
+
+See the [1.2.0 verification receipt](docs/verification-1.2.0.md) for tested
+revisions, lifecycle counts, live integration scope and limitations.
+
 ## Install the Omarchy plugin
 
 ```sh
