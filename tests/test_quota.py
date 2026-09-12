@@ -80,6 +80,22 @@ class QuotaTest(TestCase):
             self.assertNotIn('todayPrompts', record)
             self.assertEqual(record['accounts'][0]['windows'][0]['remainingPercent'], 20)
 
+    def test_cli_registration(self):
+        path = ROOT / 'hermes-usage-export' / '__init__.py'
+        self.assertTrue(path.exists(), 'native companion registration missing')
+        import sys
+        spec = importlib.util.spec_from_file_location('quota_test_plugin', path, submodule_search_locations=[str(path.parent)])
+        module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        calls = []
+        module.register(NS(register_cli_command=lambda *args: calls.append(args)))
+        self.assertEqual(calls[0][0], 'usage-export')
+        import argparse
+        parser = argparse.ArgumentParser(); calls[0][2](parser)
+        args = parser.parse_args(['--provider', 'nous'])
+        self.assertFalse(args.allow_network)
+        self.assertEqual(calls[0][3](args), 2)
+
     def test_strict_schema(self):
         q = load('quota_io')
         self.assertIsNotNone(q, 'strict quota schema missing')
