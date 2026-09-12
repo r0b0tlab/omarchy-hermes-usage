@@ -154,6 +154,15 @@ class CollectorTest(unittest.TestCase):
                 os.environ["HERMES_HOME"] = old_env
         self.assertEqual(record["tierLabel"], "Codex subscription")
 
+    def test_stderr_is_capped(self):
+        import io as _io
+        buffer = _io.StringIO()
+        capped = hu.CappedStderr(buffer, 10)
+        capped.write("x" * 100)
+        capped.write("y" * 100)
+        capped.flush()
+        self.assertEqual(buffer.getvalue(), "x" * 10)
+
 
 if __name__ == "__main__":
     unittest.main()

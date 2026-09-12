@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import io
 import json
 import os
 import sqlite3
@@ -65,6 +66,38 @@ MAX_ACTIVE_DATES = 365          # dates kept in activeDates (existing cap, now n
 MAX_RECORD_BYTES = 262144       # 256 KiB serialized payload ceiling
 SQLITE_OP_BUDGET = 5_000_000   # SQLite VM ops per connection before abort
 SQLITE_BUSY_TIMEOUT_MS = 2000  # don't wedge the shell on a locked live store
+MAX_STDERR_BYTES = 8192  # max characters a single run may send to stderr
+
+
+class CappedStderr(io.TextIOBase):
+    """Write-through stderr that stops after MAX_STDERR_BYTES characters.
+
+    Bounds what one run can ever send to the shell at the source, so no
+    consumer can accumulate more than this per run regardless of database
+    content. Extra writes are swallowed; errors on a closed pipe are ignored.
+    """
+
+    def __init__(self, inner, limit: int) -> None:
+        self._inner = inner
+        self._limit = limit
+        self._written = 0
+
+    def write(self, text: str) -> int:
+        if self._written < self._limit:
+            room = self._limit - self._written
+            chunk = text[:room]
+            self._written += len(chunk)
+            try:
+                self._inner.write(chunk)
+            except (OSError, ValueError):
+                pass
+        return len(text)
+
+    def flush(self) -> None:
+        try:
+            self._inner.flush()
+        except (OSError, ValueError):
+            pass
 
 
 def expand(value: str) -> Path:
@@ -609,6 +642,7 @@ def write_record(record: dict[str, Any], target_dir: Path | None = None) -> Path
 
 
 def main(argv: list[str] | None = None) -> int:
+    sys.stderr = CappedStderr(sys.stderr, MAX_STDERR_BYTES)
     parser = argparse.ArgumentParser(
         description="Print or write the Hermes Agent usage record as JSON."
     )
