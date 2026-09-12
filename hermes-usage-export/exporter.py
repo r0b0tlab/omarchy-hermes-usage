@@ -21,14 +21,16 @@ def normalize(snapshot, provider, now, info=None):
     if snapshot is None or getattr(snapshot, 'unavailable_reason', None): return result
     if getattr(snapshot, 'provider', None) != provider: return result
     if provider == 'nous' and (info is None or getattr(info, 'logged_in', None) is not True
-                              or getattr(info, 'source', None) != 'account_api'): return result
+                              or getattr(info, 'source', None) != 'account_api'
+                              or getattr(info, 'fresh', None) is not True): return result
     stamp = getattr(snapshot, 'fetched_at', None)
     try:
         if stamp.tzinfo is None: return result
         fetched = stamp.timestamp()
     except (AttributeError, ValueError, OverflowError): return result
-    if not q.number(fetched) or not fetched <= now < fetched + q.TTL: return result
+    if not q.number(fetched) or fetched > now: return result
     result.update(fetchedAt=fetched, expiresAt=fetched + q.TTL)
+    if now >= fetched + q.TTL: return result  # Preserve stale timestamp; writer refuses it.
     # Avoid copying arbitrary provider strings, URLs, IDs, financial prose.
     plan = getattr(snapshot, 'plan', None)
     if type(plan) is str and plan.lower() in PLANS: result['plan'] = plan.lower()

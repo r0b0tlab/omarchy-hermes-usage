@@ -30,6 +30,7 @@ Exit codes: 0 with a record printed/written, 1 when no Hermes store was found
 
 from __future__ import annotations
 
+import importlib.util
 import argparse
 import datetime as dt
 import io
@@ -41,6 +42,12 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
+
+# Explicit absolute local import: works with system Python -I; no Hermes APIs.
+_quota_spec = importlib.util.spec_from_file_location('hermes_usage_quota_io',
+    Path(__file__).resolve().parents[1] / 'hermes-usage-export' / 'quota_io.py')
+quota_io = importlib.util.module_from_spec(_quota_spec)
+_quota_spec.loader.exec_module(quota_io)
 
 AGENT_ID = "hermes"
 AGENT_NAME = "Hermes Agent"
@@ -554,10 +561,17 @@ def describe_plan(acc: Accumulator) -> str:
     return "Historical provider mix" if acc.provider_tokens else HERO_LABEL
 
 
+def account_snapshots(now):
+    folder = hermes_home() / 'usage-export'
+    return [r for p in quota_io.PROVIDERS
+            if (r := quota_io.read_snapshot(folder, p, now)) is not None]
+
+
 def build_record() -> dict[str, Any] | None:
     acc = Accumulator()
     stores = store_paths(acc)
-    if not stores:
+    accounts = account_snapshots(dt.datetime.now().timestamp())
+    if not stores and not accounts:
         return None
 
     scanned = 0
@@ -577,7 +591,7 @@ def build_record() -> dict[str, Any] | None:
         finally:
             conn.close()
 
-    if scanned == 0:
+    if scanned == 0 and not accounts and not stores:
         return None
 
     days = recent_dates()
@@ -638,6 +652,13 @@ def build_record() -> dict[str, Any] | None:
     }
     record["scope"] = "device"
     record["tierLabel"] = describe_plan(acc)
+    record['accounts'] = accounts
+    if scanned == 0:
+        record['hasLocalStats'] = False
+        record['hasPromptStats'] = False
+        for key in ('todayPrompts', 'todaySessions', 'todayTotalTokens', 'todayTokensByModel',
+                    'totalPrompts', 'totalSessions', 'recentDays', 'activeDays', 'activeDates', 'modelUsage'):
+            record.pop(key, None)
     return record
 
 
