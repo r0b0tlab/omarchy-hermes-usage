@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.r0b0tlab.hermes-usage",
   "name": "Hermes Agent Usage",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "r0b0tlab",
   "license": "MIT",
   "description": "Hermes Agent usage in the built-in Agents panel: today's tokens, the last week, and the all-time model breakdown.",

@@ -44,10 +44,13 @@ stays empty rather than showing invented numbers.
 ```
 Service.qml                       # entry point, kind: service
 └── runs on a 15-minute timer
-    └── collector/hermes-usage.py --write
-        ├── reads  $HERMES_HOME/state.db            (SQLite, read-only)
-        ├── reads  $HERMES_HOME/profiles/*/state.db (every profile)
-        └── writes $XDG_STATE_HOME/omarchy/agents/usage/hermes.json  (atomic)
+    └── /usr/bin/python3 -I collector/launch.py --write
+        ├── validates the interpreter (HERMES_USAGE_PYTHON or /usr/bin/python3)
+        ├── enters its own session, closes the environment to an allowlist
+        └── collector/hermes-usage.py
+            ├── reads  $HERMES_HOME/state.db            (SQLite, read-only)
+            ├── reads  $HERMES_HOME/profiles/*/state.db (every profile)
+            └── writes $XDG_STATE_HOME/omarchy/agents/usage/hermes.json  (atomic)
 ```
 
 The plugin ships no UI. The agents panel discovers `.json` records in the usage
@@ -88,7 +91,7 @@ Disclosed in full, because plugins run unsandboxed inside `omarchy-shell`:
 - **Writes** exactly one file:
   `$XDG_STATE_HOME/omarchy/agents/usage/hermes.json`, written to a temp file in
   the same directory and renamed into place.
-- **Runs** one command: `/usr/bin/python3 <plugin dir>/collector/hermes-usage.py --write` (override via `HERMES_USAGE_PYTHON`), on shell start and every 15 min; the run is killed after 60 s and its log output truncated.
+- **Runs** one command: `/usr/bin/python3 -I <plugin dir>/collector/launch.py --write`, on shell start and every 15 min. The launcher validates the interpreter, closes the environment to an explicit allowlist, and re-executes the collector in a private session; the service terminates that entire process group after 60 s (SIGTERM, then SIGKILL after a 3 s grace). The collector spawns nothing and needs no network.
 - **No network access. No sudo. No other commands. No telemetry.** Nothing
   leaves the machine.
 
@@ -99,11 +102,23 @@ Every input from the local store is budgeted: 20k usage rows/store
 128-char names, 5M SQLite ops budget, 2 s busy timeout, 256 KiB record
 ceiling, owned no-symlink output dir, single-flight lock.
 
+Process boundary: the only executable spawned is the fixed `/usr/bin/python3`;
+`HERMES_USAGE_PYTHON`, when set, must be an absolute, root-owned,
+non-group/world-writable regular executable or it is refused (with a warning,
+falling back to the fixed default). Both stages run `-I` with a closed
+environment (`HOME`, `XDG_STATE_HOME`, `HERMES_HOME`, `TZ` only, each passed
+through only when set). The service kills the collector's process group after
+60 s: SIGTERM, then SIGKILL 3 s later if needed. Stderr is capped at the
+source (8 KiB per run) and consumed as a stream — at most 4 KiB retained for
+the log, and a run that exceeds 64 KiB on stderr is terminated.
+
 ## Configuration
 
 `HERMES_USAGE_REFRESH_SEC` overrides the refresh interval (minimum 60).
-`HERMES_USAGE_PYTHON` overrides the interpreter (`/usr/bin/python3` by
-default; used for debugging or non-standard layouts). `HERMES_HOME` is
+`HERMES_USAGE_PYTHON` selects the interpreter that runs the collector; it
+must be an absolute path to a root-owned, non-group/world-writable regular
+executable — checked before use, and an invalid value is refused with a
+warning while `/usr/bin/python3` is used instead. `HERMES_HOME` is
 honored if you keep Hermes outside `~/.hermes`, and profile
 stores under it are picked up automatically.
 
@@ -111,7 +126,7 @@ A refresh can be forced without waiting for the timer — this is the exact
 command the service runs:
 
 ```sh
-/usr/bin/python3 ~/.config/omarchy/plugins/io.github.r0b0tlab.hermes-usage/collector/hermes-usage.py --write
+/usr/bin/python3 -I ~/.config/omarchy/plugins/io.github.r0b0tlab.hermes-usage/collector/launch.py --write
 ```
 
 The plugin registers no IPC target of its own, so `omarchy-shell shell call
@@ -142,10 +157,11 @@ from the panel. No other state is kept.
 The collector runs standalone — same code path the service uses:
 
 ```sh
-python3 collector/hermes-usage.py            # print the record
-python3 collector/hermes-usage.py --write    # write it, then look at the panel
-omarchy plugin validate .                    # manifest and layout
-qmllint -I "$OMARCHY_PATH/shell" Service.qml # entry point against the shell imports
+python3 collector/hermes-usage.py                 # print the record
+/usr/bin/python3 -I collector/launch.py --write   # the exact service path
+python3 -m unittest discover -s tests -v          # unit tests
+omarchy plugin validate .                         # manifest and layout
+qmllint -I "$OMARCHY_PATH/shell" Service.qml      # entry point against the shell imports
 ```
 
 `--force` and `--limits-only` are accepted and ignored, so the script can also
