@@ -12,6 +12,24 @@ import tempfile
 
 
 class DetailsTest(TestCase):
+    def test_active_session_cap_marks_partial(self):
+        c = sqlite3.connect(':memory:')
+        c.row_factory = sqlite3.Row
+        c.execute('CREATE TABLE sessions(id TEXT, started_at REAL)')
+        c.execute('CREATE TABLE messages(session_id TEXT, role TEXT, timestamp REAL)')
+        for sid in ('one', 'two'):
+            c.execute('INSERT INTO sessions VALUES (?, ?)', (sid, time.time()))
+            c.execute('INSERT INTO messages VALUES (?, ?, ?)', (sid, 'user', time.time()))
+        acc = hu.Accumulator()
+        try:
+            with patch.object(hu, 'MAX_SESSION_IDS', 1):
+                hu.scan_store(c, acc)
+        finally:
+            c.close()
+        self.assertEqual(acc.today_sessions, 2)
+        self.assertEqual(acc.today_prompts, 1)
+        self.assertTrue(acc.truncated)
+
     def test_bounds_and_partial_scans(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = make_store(Path(tmp), sessions=1, usage_per_session=100, messages_per_session=0)
