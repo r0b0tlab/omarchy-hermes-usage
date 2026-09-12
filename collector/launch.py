@@ -10,6 +10,7 @@ re-executes the collector with `-I`.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
@@ -80,3 +81,31 @@ def select_interpreter(environ) -> tuple:
             f"hermes-usage: {DEFAULT_INTERPRETER} failed trust validation"
         )
     return validated, warning
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    interpreter, warning = select_interpreter(os.environ)
+    if warning:
+        print(warning, file=sys.stderr)
+    if interpreter is None:
+        return 1
+    collector = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hermes-usage.py")
+    # Private session/process group: pid == pgid == sid afterwards, so the
+    # service can signal this whole tree and nothing else.
+    try:
+        os.setsid()
+    except OSError as error:
+        if error.errno != errno.EPERM or os.getpgrp() != os.getpid():
+            print(f"hermes-usage: cannot create a private process group: {error}", file=sys.stderr)
+            return 1
+    try:
+        os.execve(interpreter, [interpreter, "-I", collector, *args], child_environment(os.environ))
+    except OSError as error:
+        print(f"hermes-usage: cannot execute {interpreter}: {error}", file=sys.stderr)
+        return 1
+    return 1  # unreachable: execve replaces the process
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

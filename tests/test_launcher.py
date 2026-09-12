@@ -69,3 +69,31 @@ class LauncherUnitTest(unittest.TestCase):
         interpreter, warning = launch.select_interpreter({"HERMES_USAGE_PYTHON": "/usr/bin/python3"})
         self.assertEqual(interpreter, os.path.realpath("/usr/bin/python3"))
         self.assertIsNone(warning)
+
+
+class LauncherProcessTest(unittest.TestCase):
+    def test_refused_override_still_produces_no_store_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evil = Path(tmp) / "evil"
+            evil.write_text("#!/bin/sh\n")
+            evil.chmod(0o755)
+            env = {"HOME": tmp, "HERMES_HOME": str(Path(tmp) / "nohome"), "HERMES_USAGE_PYTHON": str(evil)}
+            result = subprocess.run(
+                [sys.executable, "-I", str(LAUNCH), "--write"],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("refused HERMES_USAGE_PYTHON", result.stderr)
+            self.assertIn("no Hermes Agent session store", result.stderr)
+
+    def test_valid_chain_writes_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_store(Path(tmp))
+            env = {"HOME": tmp, "HERMES_HOME": tmp, "XDG_STATE_HOME": str(Path(tmp) / "state")}
+            result = subprocess.run(
+                [sys.executable, "-I", str(LAUNCH), "--write"],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            record = Path(tmp) / "state" / "omarchy" / "agents" / "usage" / "hermes.json"
+            self.assertTrue(record.is_file())
