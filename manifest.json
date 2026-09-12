@@ -2,12 +2,13 @@
   "schemaVersion": 1,
   "id": "io.github.r0b0tlab.hermes-usage",
   "name": "Hermes Agent Usage",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "author": "r0b0tlab",
   "license": "MIT",
   "description": "Hermes Agent usage in the built-in Agents panel: today's tokens, the last week, and the all-time model breakdown.",
-  "kinds": ["service"],
+  "kinds": ["service", "panel"],
   "entryPoints": {
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "panel": "Details.qml"
   }
 }

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes Usage Details
+Comment=Local Hermes activity and explicitly exported account allowances
+Exec=omarchy-shell shell summon io.github.r0b0tlab.hermes-usage "{}"
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;Monitor;
+Keywords=Hermes;usage;tokens;quota;
