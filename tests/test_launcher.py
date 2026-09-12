@@ -24,6 +24,26 @@ class LauncherUnitTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_privileged_interpreter_mode_rejected(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        real = os.lstat
+        target = os.path.realpath('/usr/bin/python3')
+        def privileged(path):
+            info = real(path)
+            if path == target:
+                return SimpleNamespace(st_uid=0, st_mode=info.st_mode | 0o4000)
+            return info
+        with patch.object(launch.os, 'lstat', side_effect=privileged):
+            self.assertIsNone(launch.validate_interpreter('/usr/bin/python3'))
+
+    def test_supervisor_refuses_privileged_entry(self):
+        from unittest.mock import patch
+        self.assertTrue(hasattr(launch, 'require_unprivileged'))
+        with patch.object(launch.os, 'geteuid', return_value=0):
+            with self.assertRaises(RuntimeError):
+                launch.require_unprivileged()
+
     def test_fixed_default_validates(self):
         self.assertEqual(
             launch.validate_interpreter("/usr/bin/python3"),

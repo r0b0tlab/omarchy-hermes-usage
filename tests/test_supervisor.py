@@ -6,7 +6,7 @@ from unittest import TestCase
 RUNNER = Path(__file__).with_name('supervisor_runner.py')
 
 class SupervisorTest(TestCase):
-    def run_worker(self, code, mode=""):
+    def run_worker(self, code, mode="", max_elapsed=4):
         p = subprocess.run(['/usr/bin/python3', '-B', str(RUNNER), code, mode],
                            capture_output=True, text=True, timeout=12)
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -14,13 +14,83 @@ class SupervisorTest(TestCase):
         self.assertEqual(result['fd_delta'], 0, result)
         self.assertEqual(result['children'], [], result)
         self.assertTrue(result['echild'], result)
-        self.assertLess(result['elapsed'], 4, result)
+        self.assertLess(result['elapsed'], max_elapsed, result)
+        result['diagnostics'] = p.stderr
         return result
 
     def test_normal(self):
         r = self.run_worker("print('ok')")
         self.assertEqual(r['code'], 0)
         self.assertEqual(r['stdout'], 'ok\n')
+
+    def test_final_drain_does_not_wait_for_external_writer(self):
+        r = self.run_worker("print('ok')", 'held-writer')
+        self.assertEqual(r['stdout'], 'ok\n')
+
+    def test_external_scm_rights_writer_cannot_hold_final_drain(self):
+        import array
+        import os
+        import socket
+        receiver, sender = socket.socketpair()
+        fd = None
+        code = ("import array,socket,os; "
+                f"s=socket.socket(fileno={sender.fileno()}); "
+                "s.sendmsg([b'fd'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[1]))]); "
+                "os.write(1,b'final')")
+        child = subprocess.Popen(['/usr/bin/python3','-B',str(RUNNER),code],
+            pass_fds=(sender.fileno(),), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            sender.close()
+            receiver.settimeout(5)
+            _, ancillary, _, _ = receiver.recvmsg(16, socket.CMSG_SPACE(array.array('i').itemsize))
+            fds = array.array('i')
+            fds.frombytes(ancillary[0][2])
+            fd = fds[0]
+            out, err = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, err)
+            result = json.loads(out)
+            self.assertEqual(result['stdout'], 'final')
+            self.assertTrue(result['echild'])
+            self.assertEqual(result['fd_delta'], 0)
+            self.assertLess(result['elapsed'], 2)
+        finally:
+            receiver.close()
+            sender.close()
+            if fd is not None:
+                os.close(fd)
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=8)
+
+    def test_enumeration_exception_does_not_abandon_children(self):
+        r = self.run_worker('import time; time.sleep(2)', 'enumeration-value-error')
+        self.assertIn('error', r)
+
+    def test_close_failure_still_closes_other_descriptors(self):
+        r = self.run_worker("print('ok')", 'close-error')
+        self.assertIn('error', r)
+
+    def test_final_group_exception_keeps_cleanup_ownership(self):
+        r = self.run_worker('import time; time.sleep(2)', 'final-group-error')
+        self.assertIn('error', r)
+
+    def test_incomplete_listings_still_count_all_waited_children(self):
+        code = 'import os,time\np=os.fork()\nif p==0:\n os.setsid(); print(os.getpid(),flush=True); time.sleep(1); os._exit(0)\ntime.sleep(3)'
+        for mode in ('empty-listing', 'partial-listing'):
+            with self.subTest(mode=mode):
+                r = self.run_worker(code, mode)
+                self.assertEqual(len(r['reaped']), 2)
+                self.assertIn(int(r['stdout']), r['reaped'])
+
+    def test_transient_wait_failure_keeps_ownership(self):
+        r = self.run_worker('import time; time.sleep(2)', 'wait-error')
+        self.assertIn('error', r)
+
+    def test_permission_failure_reports_pending_not_success(self):
+        r = self.run_worker('import time; time.sleep(4.2)', 'permission-pending', max_elapsed=6)
+        self.assertIn('error', r)
+        self.assertEqual(r['diagnostics'].count('cleanup pending; remaining busy'), 1)
+        self.assertGreater(r['elapsed'], 4)
 
     def test_term_ignoring_worker(self):
         r = self.run_worker('import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(5)')

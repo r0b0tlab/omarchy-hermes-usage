@@ -39,7 +39,62 @@ if mode == 'exec':
 patcher = None
 exhausted = []
 limit_before = None
-if mode == 'real-emfile':
+if mode in ('empty-listing', 'partial-listing'):
+    original_read = os.read
+    def listing(fd, n):
+        value = original_read(fd, n)
+        if os.readlink('/proc/self/fd/%d' % fd).endswith('/children'):
+            return b'' if mode == 'empty-listing' else b' '.join(value.split()[:1])
+        return value
+    patcher = patch.object(m.os, 'read', side_effect=listing)
+elif mode == 'wait-error':
+    real_wait = original_wait
+    injected = [False]
+    def transient_wait(pid, flags):
+        if not injected[0]:
+            injected[0] = True
+            raise OSError(errno.EIO, 'injected wait failure')
+        return real_wait(pid, flags)
+    original_wait = transient_wait
+elif mode == 'permission-pending':
+    def denied(*args):
+        raise PermissionError(errno.EACCES, 'injected signalling denial')
+    original_group = denied
+    patcher = patch.object(m.signal, 'pidfd_send_signal', side_effect=denied)
+elif mode == 'final-group-error':
+    real_group = m.signal_reserved_group
+    def group_error(pid, sig):
+        if sig == signal.SIGKILL:
+            raise RuntimeError('injected final group exception')
+        return real_group(pid, sig)
+    patcher = patch.object(m, 'signal_reserved_group', side_effect=group_error)
+elif mode == 'held-writer':
+    original_pipe = os.pipe
+    def held_pipe():
+        pair = original_pipe()
+        if not exhausted:
+            exhausted.append(os.dup(pair[1]))
+        return pair
+    patcher = patch.object(m.os, 'pipe', side_effect=held_pipe)
+elif mode == 'enumeration-value-error':
+    original_read = os.read
+    injected = [False]
+    def read(fd, n):
+        if (not injected[0] and time.monotonic() - started > .1
+                and os.readlink('/proc/self/fd/%d' % fd).endswith('/children')):
+            injected[0] = True
+            raise ValueError('injected malformed listing')
+        return original_read(fd, n)
+    patcher = patch.object(m.os, 'read', side_effect=read)
+elif mode == 'close-error':
+    original_close = os.close
+    def close(fd):
+        target = os.readlink('/proc/self/fd/%d' % fd)
+        original_close(fd)
+        if target.endswith('/children'):
+            raise OSError(errno.EIO, 'injected close result')
+    patcher = patch.object(m.os, 'close', side_effect=close)
+elif mode == 'real-emfile':
     import resource
     limit_before = resource.getrlimit(resource.RLIMIT_NOFILE)
     real_pidfd = os.pidfd_open
@@ -88,8 +143,8 @@ try:
         result = m.supervise(command, {}, timeout=0.5, grace=0.2)
     result['stdout'] = result['stdout'].decode('utf-8', 'replace')
     result['stderr'] = result['stderr'].decode('utf-8', 'replace')
-except OSError as error:
-    result = {'error': error.errno}
+except Exception as error:
+    result = {'error': getattr(error, 'errno', type(error).__name__)}
 finally:
     if patcher:
         patcher.stop()
@@ -106,4 +161,21 @@ try:
     result['echild'] = False
 except ChildProcessError:
     result['echild'] = True
+result['emergency_waited'] = []
+if not result['echild']:
+    # Preserve the failing production snapshot above, then safely reap only
+    # this harness's unreaped direct/adopted fixture children before exiting.
+    while True:
+        for child in m.direct_children():
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            done, _ = original_wait(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if done:
+            result['emergency_waited'].append(done)
+        time.sleep(.01)
 print(json.dumps(result))
