@@ -37,7 +37,14 @@ command = ['/usr/bin/python3', '-I', '-c', worker]
 if mode == 'exec':
     command = ['/nonexistent-hermes-fixture-executable']
 patcher = None
-if mode == 'pidfd':
+if mode == 'pidfd-descendants':
+    def no_pidfds(*args):
+        time.sleep(0.1)
+        raise OSError(errno.EMFILE, 'injected persistent exhaustion')
+    patcher = patch.object(m.os, 'pidfd_open', side_effect=no_pidfds)
+elif mode == 'group-esrch':
+    patcher = patch.object(m, 'signal_reserved_group', side_effect=lambda *args: None)
+elif mode == 'pidfd':
     patcher = patch.object(m.os, 'pidfd_open', side_effect=OSError(errno.EMFILE, 'injected'))
 elif mode == 'selector':
     patcher = patch.object(m.selectors, 'DefaultSelector', side_effect=OSError(errno.EMFILE, 'injected'))

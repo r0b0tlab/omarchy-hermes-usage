@@ -83,7 +83,7 @@ class LauncherProcessTest(unittest.TestCase):
                 env=env, capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(result.returncode, 1)
-            self.assertIn("refused HERMES_USAGE_PYTHON", result.stderr)
+            self.assertIn("interpreter override refused", result.stderr)
             self.assertIn("no Hermes Agent session store", result.stderr)
 
     def test_valid_chain_writes_record(self):

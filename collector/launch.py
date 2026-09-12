@@ -1,12 +1,5 @@
 #!/usr/bin/python3
-"""Bounded launcher for the Hermes usage collector.
-
-Service.qml never executes anything but a fixed absolute interpreter; this
-launcher runs under it, validates the interpreter override
-(HERMES_USAGE_PYTHON), drops to a closed environment, puts itself in its own
-session (so the service can terminate the whole process group), and
-re-executes the collector with `-I`.
-"""
+"""Direct-parent Linux supervisor for one bounded usage refresh."""
 
 from __future__ import annotations
 
@@ -318,29 +311,28 @@ def supervise(command, environment, timeout=TIMEOUT, grace=GRACE):
                 stderr=bytes(output[1]), reaped=reaped, counts=counts)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     interpreter, warning = select_interpreter(os.environ)
     if warning:
-        print(warning, file=sys.stderr)
+        # Do not echo attacker-sized override values to logs.
+        print('hermes-usage: interpreter override refused; using trusted default', file=sys.stderr)
     if interpreter is None:
-        return 1
-    collector = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hermes-usage.py")
-    # Private session/process group: pid == pgid == sid afterwards, so the
-    # service can signal this whole tree and nothing else.
+        return 126
+    collector = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'hermes-usage.py')
     try:
-        os.setsid()
-    except OSError as error:
-        if error.errno != errno.EPERM or os.getpgrp() != os.getpid():
-            print(f"hermes-usage: cannot create a private process group: {error}", file=sys.stderr)
-            return 1
-    try:
-        os.execve(interpreter, [interpreter, "-I", collector, *args], child_environment(os.environ))
-    except OSError as error:
-        print(f"hermes-usage: cannot execute {interpreter}: {error}", file=sys.stderr)
-        return 1
-    return 1  # unreachable: execve replaces the process
+        result = supervise([interpreter, '-I', collector, *args], child_environment(os.environ))
+    except Exception:
+        print('hermes-usage: supervisor failed after cleanup', file=sys.stderr)
+        return 126
+    if result['stdout']:
+        sys.stdout.buffer.write(result['stdout'])
+    if result['stderr']:
+        sys.stderr.buffer.write(result['stderr'][:2048])
+    if result['reason']:
+        print('\nhermes-usage: ' + result['reason'], file=sys.stderr)
+    return result['code'] if result['code'] >= 0 else 128 - result['code']
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

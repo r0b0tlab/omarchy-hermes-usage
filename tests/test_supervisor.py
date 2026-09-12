@@ -87,3 +87,17 @@ class SupervisorTest(TestCase):
             if p.poll() is None:
                 p.terminate(); p.wait(timeout=8)
             sentinel.terminate(); sentinel.wait(timeout=8)
+
+    def test_persistent_pidfd_failure_with_detached_descendant(self):
+        r = self.run_worker('import os,time\np=os.fork()\nif p==0:\n os.setsid(); time.sleep(3); os._exit(0)\ntime.sleep(3)', 'pidfd-descendants')
+        self.assertIn('error', r)
+        self.assertEqual(len([e for e in r['events'] if e[0]=='wait']), 2)
+
+    def test_group_absent_still_reaps_children(self):
+        r = self.run_worker('import time; time.sleep(3)', 'group-esrch')
+        self.assertEqual(r['code'],124)
+        self.assertEqual(len(r['reaped']),1)
+
+    def test_no_privilege_gaining_exec(self):
+        r = self.run_worker("print(next(x for x in open('/proc/self/status') if x.startswith('NoNewPrivs:')),end='')")
+        self.assertEqual(r['stdout'].split()[-1], '1')
