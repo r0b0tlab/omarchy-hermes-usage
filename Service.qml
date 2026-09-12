@@ -5,6 +5,7 @@ Item {
   id: root
   property var shell: null
   property var manifest: null
+  readonly property bool busy: worker.running
   readonly property string launcherPath: decodeURIComponent(String(Qt.resolvedUrl("collector/bootstrap.py")).replace(/^file:\/\//, ""))
   readonly property int refreshMs: {
     var n = Number(Quickshell.env("HERMES_USAGE_REFRESH_SEC"))
