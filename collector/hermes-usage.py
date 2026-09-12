@@ -21,11 +21,12 @@ Usage:
     hermes-usage.py --write     # write it into the agents usage directory
 
 `--force` and `--limits-only` are accepted and ignored so this script can be
-dropped into `omarchy-agent-usage-<agent>` slots unchanged; Hermes has no
-provider limits endpoint to query, so there is nothing to force or limit.
+dropped into `omarchy-agent-usage-<agent>` slots unchanged; this worker has no
+authenticated endpoint access here. Fresh sanitized observations are read from
+an explicitly invoked companion; local refresh never fetches account quotas.
 
-Exit codes: 0 with a record printed/written, 1 when no Hermes store was found
-(writes nothing, so the panel does not grow an empty tab).
+Exit codes: 0 with a record printed/written, 1 with no usable input or a refused
+write. Quota-only records contain no fabricated local activity.
 """
 
 from __future__ import annotations
@@ -51,9 +52,8 @@ _quota_spec.loader.exec_module(quota_io)
 AGENT_ID = "hermes"
 AGENT_NAME = "Hermes Agent"
 WEEK_DAYS = 7
-# Only usage rows touched inside this window get day-by-day attribution from
-# message timestamps; older rows are attributed to the day they were last
-# recorded. Their tokens still count toward all-time totals either way.
+# Only rows touched inside this window get message-day attribution. Other
+# rows use their recorded first/last span. Both are estimates, not billing days.
 DAY_MAP_HORIZON_DAYS = 120
 # Hermes bills across whatever providers are configured, often several at once,
 # so the panel's single plan line cannot name one of them truthfully. It says

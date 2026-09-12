@@ -1,8 +1,8 @@
 # Ephemeral collection supervision
 
-This is the security implementation for the 1.2.0 development branch, not
-publication approval. Independent review remains required. The README, manifest
-and feature work are deliberately unchanged by this security-only stage.
+This documents the security implementation for the 1.2.0 development branch,
+not publication approval. Independent review remains required. See the README
+and security-boundary.md for the companion and Details feature boundary.
 
 ## QML lifetime is not supervisor lifetime
 
