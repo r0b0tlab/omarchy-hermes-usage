@@ -11,6 +11,9 @@ re-executes the collector with `-I`.
 from __future__ import annotations
 
 import errno
+import ctypes
+import time
+import signal
 import os
 import stat
 import sys
@@ -81,6 +84,66 @@ def select_interpreter(environ) -> tuple:
             f"hermes-usage: {DEFAULT_INTERPRETER} failed trust validation"
         )
     return validated, warning
+
+
+TIMEOUT = 60.0
+GRACE = 3.0
+OUT_CAP = 262144
+ERR_CAP = 8192
+
+
+def subreaper():
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise OSError(ctypes.get_errno(), 'cannot enable child subreaper')
+
+
+def direct_children():
+    # This supervisor is single-threaded. Do not generalize to another PID.
+    with open('/proc/self/task/%d/children' % os.getpid(), encoding='ascii') as f:
+        return [int(x) for x in f.read().split()]
+
+
+def signal_owned_child(pid, sig):
+    # Caller owns this direct child and has NOT reaped it. No SIGCHLD handler
+    # or Popen.poll()/wait() may independently reap children in this process.
+    fd = os.pidfd_open(pid)
+    try:
+        signal.pidfd_send_signal(fd, sig)
+    except ProcessLookupError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def signal_reserved_group(pid, sig):
+    # Valid ONLY while the group's leader is our unreaped child. ESRCH means
+    # no signalable members remain; it does not excuse skipping wait/reaping.
+    try:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def drain_adopted():
+    reaped = []
+    while True:
+        children = direct_children()
+        if not children:
+            try:
+                os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return reaped
+            time.sleep(0.02)
+            continue
+        for pid in children:
+            # Still our child: no concurrent reaper, even if already a zombie.
+            signal_owned_child(pid, signal.SIGKILL)
+        for pid in children:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if done:
+                reaped.append(done)
+        time.sleep(0.02)
 
 
 def main(argv: list[str] | None = None) -> int:
