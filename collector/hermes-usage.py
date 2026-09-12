@@ -34,6 +34,7 @@ import argparse
 import datetime as dt
 import io
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -253,6 +254,47 @@ def clean_epoch(value: Any) -> float | None:
     return number
 
 
+def finite_cost(value):
+    if type(value) not in (int, float):
+        return None
+    try:
+        return float(value) if math.isfinite(value) and 0 <= value <= 1e12 else None
+    except OverflowError:
+        return None
+
+
+def new_detail_bucket():
+    return dict(rows=0, calls=None, unknownCallRows=0, tokens=0, reasoning=0,
+                cacheRead=0, estimatedUsd=None, actualUsd=None,
+                latestStatusRows={k: 0 for k in ('estimated', 'actual', 'included', 'unknown')})
+
+
+def add_detail(bucket, row, total):
+    bucket['rows'] += 1
+    calls = row['api_call_count']
+    if type(calls) is int and calls >= 0:
+        bucket['calls'] = clamp_token((bucket['calls'] or 0) + calls)
+    else:
+        bucket['unknownCallRows'] += 1
+    for key, value in (('tokens', total), ('reasoning', row['reasoning_tokens']),
+                       ('cacheRead', row['cache_read_tokens'])):
+        bucket[key] = clamp_token(bucket[key] + clamp_token(value))
+    # Hermes UPSERT sums these independently; status only describes latest update.
+    for key, column in (('estimatedUsd', 'estimated_cost_usd'), ('actualUsd', 'actual_cost_usd')):
+        value = finite_cost(row[column])
+        if value is not None:
+            bucket[key] = min(1e12, (bucket[key] or 0) + value)
+    status = row['cost_status']
+    bucket['latestStatusRows'][status if status in ('estimated', 'actual', 'included') else 'unknown'] += 1
+
+
+def add_group(groups, name, row, total, cap=32):
+    name = clean_model_name(name)[:64]
+    if name not in groups and len(groups) >= cap - 1:
+        name = 'other'
+    add_detail(groups.setdefault(name, new_detail_bucket()), row, total)
+
+
 class Accumulator:
     """Everything the panel can be shown, gathered across every store."""
 
@@ -271,6 +313,10 @@ class Accumulator:
         self.today_total_tokens = 0.0
         self.usage_rows = 0
         self.days_scanned = 0
+        self.details = new_detail_bucket()
+        self.task_details = {}
+        self.provider_details = {}
+        self.truncated = False
 
     def add_tokens(self, model: str, bucket: dict[str, int]) -> None:
         if model not in self.tokens_by_model and len(self.tokens_by_model) >= MAX_MODELS:
@@ -393,15 +439,15 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
     if not has_table(conn, "session_model_usage"):
         return
 
+    usage_columns = columns(conn, 'session_model_usage')
+    fields = ('session_id', 'model', 'billing_provider', 'billing_mode', 'input_tokens',
+              'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
+              'estimated_cost_usd', 'actual_cost_usd', 'cost_status', 'first_seen', 'last_seen',
+              'api_call_count', 'task')
+    selection = ', '.join(k if k in usage_columns else 'NULL AS ' + k for k in fields)
     try:
-        cursor = conn.execute(
-            "SELECT session_id, model, billing_provider, billing_mode,"
-            " input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,"
-            " reasoning_tokens, estimated_cost_usd, actual_cost_usd, cost_status,"
-            " first_seen, last_seen"
-            " FROM session_model_usage ORDER BY last_seen DESC"
-            f" LIMIT {MAX_USAGE_ROWS + 1}"
-        )
+        cursor = conn.execute('SELECT ' + selection +
+                              f' FROM session_model_usage ORDER BY last_seen DESC LIMIT {MAX_USAGE_ROWS + 1}')
     except sqlite3.Error:
         return
     rows = []
@@ -435,6 +481,9 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
         }
         total = float(sum(bucket.values()))
         acc.add_tokens(model, bucket)
+        add_detail(acc.details, row, total)
+        add_group(acc.task_details, 'unknown' if row['task'] is None else (row['task'] or 'ordinary'), row, total)
+        add_group(acc.provider_details, row['billing_provider'] or 'unknown', row, total)
 
         provider = clean_provider(row["billing_provider"] if "billing_provider" in row.keys() else "")
         acc.provider_tokens[provider] = acc.provider_tokens.get(provider, 0.0) + total
@@ -568,6 +617,12 @@ def build_record() -> dict[str, Any] | None:
         for provider, tokens in sorted(acc.provider_tokens.items(), key=lambda item: item[1], reverse=True)[:MAX_MODELS]
     }
     record["providerUsage"] = provider_usage
+    record['details'] = {
+        'scope': 'device', 'coverage': 'bounded local history',
+        'dailyAttribution': 'estimated from assistant-message activity or row times',
+        'truncated': acc.truncated, 'totals': acc.details,
+        'tasks': acc.task_details, 'providers': acc.provider_details,
+    }
     record["scope"] = "device"
     record["tierLabel"] = describe_plan(acc)
     return record
