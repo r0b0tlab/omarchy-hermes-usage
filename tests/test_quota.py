@@ -144,6 +144,13 @@ class QuotaTest(TestCase):
         self.assertIsNone(q.validate(r,'anthropic',now))
         self.assertIsNone(q.validate(r,'openai-codex',now+601))
 
+    def test_writer_refuses_expired_or_future_observations(self):
+        q=load('quota_io'); now=float(int(time.time()))
+        with tempfile.TemporaryDirectory() as tmp:
+            for observed in (now-1000,now+1000):
+                with self.assertRaises(ValueError):
+                    q.write_snapshot(Path(tmp)/'usage-export','nous',q.unavailable('nous',observed))
+
     def test_strict_schema(self):
         q = load('quota_io')
         self.assertIsNotNone(q, 'strict quota schema missing')

@@ -8,6 +8,7 @@ import math
 import os
 import secrets
 import stat
+import time
 import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
@@ -126,7 +127,7 @@ def atomic_write(folder, name, payload):
 
 def write_snapshot(folder, provider, record):
     if provider not in PROVIDERS: raise ValueError('unsupported provider')
-    if validate(record, provider, record.get('fetchedAt')) is None: raise ValueError('invalid snapshot')
+    if validate(record, provider, time.time()) is None: raise ValueError('invalid snapshot')
     payload = json.dumps(record, allow_nan=False, separators=(',', ':')).encode()
     if len(payload) > CAP: raise ValueError('snapshot ceiling')
     atomic_write(folder, provider + '.json', payload)

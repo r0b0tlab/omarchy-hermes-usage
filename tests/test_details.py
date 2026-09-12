@@ -75,6 +75,47 @@ class DetailsTest(TestCase):
         self.assertEqual(acc.today_sessions,1)
         self.assertFalse(acc.truncated)
 
+    def test_ordinary_title_and_vision_groups_reconcile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db=make_store(Path(tmp),sessions=1,usage_per_session=3)
+            c=sqlite3.connect(db)
+            for i,(task,calls,provider) in enumerate((('',2,'nous'),('title_generation',3,'nous'),('vision',1,'openrouter')),1):
+                c.execute('UPDATE session_model_usage SET task=?,api_call_count=?,billing_provider=? WHERE rowid=?',(task,calls,provider,i))
+            c.commit(); c.close()
+            c=hu.connect(db); acc=hu.Accumulator()
+            try: hu.scan_store(c,acc)
+            finally: c.close()
+            self.assertEqual(set(acc.task_details),{'ordinary','title_generation','vision'})
+            for key in ('calls','tokens'):
+                self.assertEqual(sum(v[key] for v in acc.task_details.values()),acc.details[key])
+                self.assertEqual(sum(v[key] for v in acc.provider_details.values()),acc.details[key])
+
+    def test_profile_enumeration_and_message_group_caps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp); (home/'profiles').mkdir()
+            for i in range(6):
+                folder=home/'profiles'/str(i); folder.mkdir(); (folder/'state.db').touch()
+            acc=hu.Accumulator()
+            with patch.dict(hu.os.environ,HERMES_HOME=str(home)), patch.object(hu,'MAX_PROFILE_ENTRIES',3):
+                self.assertLessEqual(len(hu.store_paths(acc)),3)
+                self.assertTrue(acc.truncated)
+            db=make_store(home,sessions=5,messages_per_session=2)
+            c=hu.connect(db); acc=hu.Accumulator()
+            try:
+                with patch.object(hu,'MAX_DAY_GROUPS',2):
+                    weights=hu.message_day_weights(c,['sess-'+str(i) for i in range(5)],acc)
+                self.assertLessEqual(sum(len(v) for v in weights.values()),2)
+                self.assertTrue(acc.truncated)
+            finally: c.close()
+
+    def test_stdout_uses_final_serializer_ceiling(self):
+        from contextlib import redirect_stdout
+        import io
+        output=io.StringIO()
+        with patch.object(hu,'build_record',return_value={'details':{'huge':'x'*(hu.MAX_RECORD_BYTES+1)}}),redirect_stdout(output),patch.object(hu.sys,'stderr',io.StringIO()):
+            self.assertEqual(hu.main([]),1)
+        self.assertEqual(output.getvalue(),'')
+
     def test_serializer_final_cap(self):
         with self.assertRaises(ValueError):
             hu.serialize_record({'details': {'huge': 'x' * (hu.MAX_RECORD_BYTES + 1)}})
