@@ -26,6 +26,18 @@ class CollectorTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_reasoning_is_not_added_twice(self):
+        db = make_store(self.root, sessions=1, usage_per_session=1)
+        with sqlite3.connect(db) as c:
+            c.execute('UPDATE session_model_usage SET output_tokens=50, reasoning_tokens=40')
+        conn = hu.connect(db)
+        try:
+            acc = hu.Accumulator()
+            hu.scan_store(conn, acc)
+            self.assertEqual(acc.tokens_by_model['test-model']['outputTokens'], 50)
+        finally:
+            conn.close()
+
     def test_fixture_builds_record(self):
         make_store(self.root)
         # NOTE: constants below are defined in Task 2; this fails until then.

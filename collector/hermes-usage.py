@@ -424,8 +424,7 @@ def scan_store(conn: sqlite3.Connection, acc: Accumulator) -> None:
     for row in rows:
         model = clean_model_name(row["model"])
         input_tokens = clamp_token(row["input_tokens"])
-        output_tokens = clamp_token(row["output_tokens"]) + clamp_token(row["reasoning_tokens"])
-        output_tokens = clamp_token(output_tokens)
+        output_tokens = clamp_token(row["output_tokens"])
         cache_read = clamp_token(row["cache_read_tokens"])
         cache_write = clamp_token(row["cache_write_tokens"])
         bucket = {
