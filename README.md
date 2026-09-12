@@ -184,7 +184,8 @@ Defaults: `HERMES_HOME=$HOME/.hermes`, `XDG_STATE_HOME=$HOME/.local/state`.
 SQLite connections request `mode=ro` and `query_only`; the existing fallback
 opens a connection with SQL writes disabled if a read-only URI is refused.
 SQLite may access associated WAL/shared-memory files. This is not a filesystem
-sandbox. No sudo, telemetry, credential reads or network in the Omarchy worker.
+sandbox. The Omarchy worker runs with the invoking user's privileges, performs
+local-only collection, and neither reads credentials nor sends telemetry.
 
 ### Bounds and lifecycle
 
