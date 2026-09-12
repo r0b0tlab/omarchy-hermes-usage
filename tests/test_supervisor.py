@@ -101,3 +101,18 @@ class SupervisorTest(TestCase):
     def test_no_privilege_gaining_exec(self):
         r = self.run_worker("print(next(x for x in open('/proc/self/status') if x.startswith('NoNewPrivs:')),end='')")
         self.assertEqual(r['stdout'].split()[-1], '1')
+
+    def test_parent_exit_enters_cleanup(self):
+        p = subprocess.run(['/usr/bin/python3','-B',str(RUNNER.with_name('parent_exit_runner.py'))],
+                           capture_output=True,text=True,timeout=12)
+        self.assertEqual(p.returncode,0,p.stderr)
+        r=json.loads(p.stdout)
+        self.assertEqual(r['code'],130)
+        self.assertEqual(r['children'],[])
+        self.assertLess(r['elapsed'],4)
+
+    def test_actual_descriptor_exhaustion(self):
+        import errno
+        r = self.run_worker('import time; time.sleep(3)', 'real-emfile')
+        self.assertEqual(r['error'], errno.EMFILE)
+        self.assertEqual(len([e for e in r['events'] if e[0]=='wait']),1)

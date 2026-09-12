@@ -10,13 +10,14 @@ Item {
     var n = Number(Quickshell.env("HERMES_USAGE_REFRESH_SEC"))
     return isFinite(n) && n >= 60 ? Math.min(n, 86400) * 1000 : 900000
   }
+  readonly property var childEnvironment: ({"HOME": null, "XDG_STATE_HOME": null,
+      "HERMES_HOME": null, "TZ": null, "HERMES_USAGE_PYTHON": null})
   function refresh() { if (!worker.running) worker.running = true }
   Process {
     id: worker
     command: ["/usr/bin/python3", "-I", root.launcherPath, "--write"]
     clearEnvironment: true
-    environment: ({"HOME": null, "XDG_STATE_HOME": null, "HERMES_HOME": null,
-                   "TZ": null, "HERMES_USAGE_PYTHON": null})
+    environment: root.childEnvironment
     stderr: SplitParser {
       splitMarker: ""
       onRead: function(text) { console.info("hermes-usage", text.slice(0, 2100)) }
@@ -27,7 +28,9 @@ Item {
   }
   IpcHandler {
     target: "io.github.r0b0tlab.hermes-usage"
-    function refresh(): string { root.refresh(); return "requested" }
+    readonly property var childEnvironment: ({"HOME": null, "XDG_STATE_HOME": null,
+      "HERMES_HOME": null, "TZ": null, "HERMES_USAGE_PYTHON": null})
+  function refresh(): string { root.refresh(); return "requested" }
   }
   Timer { interval: root.refreshMs; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
   // RELEASE BLOCKER: Quickshell 0.3.1 Process destruction SIGKILLs the

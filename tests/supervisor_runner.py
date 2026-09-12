@@ -37,7 +37,23 @@ command = ['/usr/bin/python3', '-I', '-c', worker]
 if mode == 'exec':
     command = ['/nonexistent-hermes-fixture-executable']
 patcher = None
-if mode == 'pidfd-descendants':
+exhausted = []
+limit_before = None
+if mode == 'real-emfile':
+    import resource
+    limit_before = resource.getrlimit(resource.RLIMIT_NOFILE)
+    real_pidfd = os.pidfd_open
+    def exhaust(*args):
+        resource.setrlimit(resource.RLIMIT_NOFILE, (32, limit_before[1]))
+        while True:
+            try:
+                exhausted.append(os.open('/dev/null', os.O_RDONLY))
+            except OSError as error:
+                assert error.errno == errno.EMFILE
+                break
+        return real_pidfd(*args)
+    patcher = patch.object(m.os, 'pidfd_open', side_effect=exhaust)
+elif mode == 'pidfd-descendants':
     def no_pidfds(*args):
         time.sleep(0.1)
         raise OSError(errno.EMFILE, 'injected persistent exhaustion')
@@ -77,6 +93,10 @@ except OSError as error:
 finally:
     if patcher:
         patcher.stop()
+    for fd in exhausted:
+        os.close(fd)
+    if limit_before is not None:
+        resource.setrlimit(resource.RLIMIT_NOFILE, limit_before)
 result['elapsed'] = time.monotonic() - started
 result['events'] = events
 result['fd_delta'] = len(os.listdir('/proc/self/fd')) - before
